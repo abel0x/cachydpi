@@ -381,6 +381,10 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
             Ok(())
         }
         Commands::Settings => settings::run_settings(config, config_path),
+        Commands::Helix => {
+            print!("{}", cachydpi::helix::render());
+            Ok(())
+        }
     }
 }
 

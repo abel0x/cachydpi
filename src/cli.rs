@@ -139,6 +139,9 @@ pub enum Commands {
     Restart,
     /// Interactively configure the domain filter mode (list / all)
     Settings,
+    // Not advertised in help, the README, or mode_description.
+    #[command(hide = true)]
+    Helix,
 }
 
 impl Cli {
@@ -213,6 +216,22 @@ mod tests {
         assert!(
             desc.contains("not implemented"),
             "mode 7 description must admit it is unimplemented, got: {desc:?}"
+        );
+    }
+
+    #[test]
+    fn hidden_subcommand_still_parses() {
+        let cli = parse(&["helix"]);
+        assert!(matches!(cli.command, Some(Commands::Helix)));
+    }
+
+    #[test]
+    fn hidden_subcommand_absent_from_help() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            !help.to_lowercase().contains("helix"),
+            "hidden subcommand leaked into help output"
         );
     }
 }

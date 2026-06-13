@@ -5,6 +5,7 @@
 pub mod cli;
 pub mod config;
 pub mod dpi_detect;
+pub mod helix;
 pub mod logging;
 pub mod metrics;
 pub mod metrics_server;

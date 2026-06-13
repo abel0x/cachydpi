@@ -113,7 +113,7 @@ whitelist = []
 
 [logging]
 # Log level: "error", "warn", "info", "debug", "trace"
-level = "debug"
+level = "info"
 
 # Log to journald
 journald = true
