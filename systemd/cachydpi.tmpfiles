@@ -1,0 +1,9 @@
+# CachyDPI tmpfiles configuration
+# Create configuration directory
+d /etc/cachydpi 0755 root root -
+
+# Create log directory (if file logging is used)
+d /var/log/cachydpi 0750 cachydpi cachydpi -
+
+# Create runtime directory
+d /run/cachydpi 0750 cachydpi cachydpi -

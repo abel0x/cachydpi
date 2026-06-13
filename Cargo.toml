@@ -1,0 +1,78 @@
+[package]
+name = "cachydpi"
+version = "1.0.0"
+edition = "2024"
+autobins = false
+authors = ["abel0x <https://github.com/abel0x>"]
+description = "System-wide DPI bypass tool for Linux — GoodbyeDPI alternative"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/abel0x/cachydpi"
+homepage = "https://github.com/abel0x/cachydpi"
+keywords = ["dpi", "bypass", "censorship", "nftables", "cachyos"]
+categories = ["network-programming", "command-line-utilities"]
+build = "build.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-journald = "0.3"
+
+# Linux system
+nix = { version = "0.29", features = ["user", "process", "net", "socket"] }
+libc = "0.2"
+caps = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
+
+# Serialization
+serde_json = "1"
+
+# Utilities
+anyhow = "1"
+thiserror = "2"
+signal-hook = "0.3"
+
+# Monitor TUI (optional, enabled by default)
+ratatui = { version = "0.30", optional = true }
+crossterm = { version = "0.29", optional = true }
+
+[features]
+default = ["monitor"]
+monitor = ["dep:ratatui", "dep:crossterm"]
+
+[[bin]]
+name = "cachydpi"
+path = "src/main.rs"
+
+[[bin]]
+name = "cachydpi-monitor"
+path = "src/bin/cachydpi-monitor.rs"
+required-features = ["monitor"]
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release-cachyos]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

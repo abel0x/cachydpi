@@ -1,0 +1,8 @@
+# cargo-audit configuration
+# See: https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+# RUSTSEC-2026-0097: rand 0.8.5 — transitive dep via phf_generator → ratatui
+# Not directly used; rand is pulled in by phf_macros for compile-time hash map generation.
+# No runtime exposure. Will be resolved when ratatui updates its termwiz dependency.
+ignore = ["RUSTSEC-2026-0097"]

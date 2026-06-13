@@ -1,0 +1,66 @@
+# CachyDPI Makefile
+# Simplified build commands for development and packaging
+
+CARGO := cargo
+INSTALL := install
+BINARY := cachydpi
+PREFIX := /usr
+DESTDIR :=
+SYSCONFDIR := /etc
+
+.PHONY: all build release debug clean install uninstall test check fmt clippy
+
+all: release
+
+# Development build (fast compile, unoptimized)
+debug:
+	$(CARGO) build
+
+# Release build (optimized, settings from Cargo.toml profile)
+release:
+	$(CARGO) build --release
+
+# Full build with all optimizations
+build: release
+
+# Run tests
+test:
+	$(CARGO) test
+
+# Run clippy linter
+clippy:
+	$(CARGO) clippy -- -W clippy::all
+
+# Run formatter check
+fmt:
+	$(CARGO) fmt --check
+
+# Check without building
+check:
+	$(CARGO) check
+
+# Install to system (run 'make release' first, then 'sudo make install')
+install:
+	$(INSTALL) -Dm755 target/release/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
+	$(INSTALL) -Dm644 config/config.toml $(DESTDIR)$(SYSCONFDIR)/cachydpi/config.toml
+	$(INSTALL) -Dm644 config/blacklist.txt $(DESTDIR)$(SYSCONFDIR)/cachydpi/blacklist.txt
+	$(INSTALL) -Dm644 systemd/cachydpi.service $(DESTDIR)$(PREFIX)/lib/systemd/system/cachydpi.service
+	$(INSTALL) -Dm644 systemd/cachydpi.sysusers $(DESTDIR)$(PREFIX)/lib/sysusers.d/cachydpi.conf
+	$(INSTALL) -Dm644 systemd/cachydpi.tmpfiles $(DESTDIR)$(PREFIX)/lib/tmpfiles.d/cachydpi.conf
+	@echo ""
+	@echo "CachyDPI installed. Enable with: sudo systemctl enable --now cachydpi"
+
+# Uninstall from system
+uninstall:
+	/usr/bin/cachydpi remove-rules 2>/dev/null || true
+	systemctl stop cachydpi 2>/dev/null || true
+	systemctl disable cachydpi 2>/dev/null || true
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINARY)
+	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/cachydpi.service
+	rm -f $(DESTDIR)$(PREFIX)/lib/sysusers.d/cachydpi.conf
+	rm -f $(DESTDIR)$(PREFIX)/lib/tmpfiles.d/cachydpi.conf
+	@echo "CachyDPI uninstalled. Config preserved at $(SYSCONFDIR)/cachydpi/"
+
+# Clean build artifacts
+clean:
+	$(CARGO) clean

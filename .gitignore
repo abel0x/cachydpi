@@ -1,0 +1,19 @@
+# Build artifacts
+/target/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary test artifacts
+/tmp/
+*.pcap
+tests/reports/*.txt
+/cachydpi/

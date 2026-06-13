@@ -1,0 +1,67 @@
+[Unit]
+Description=CachyDPI — System-wide DPI bypass daemon
+Documentation=https://github.com/abel0x/cachydpi
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cachydpi --foreground
+
+# Run as dedicated cachydpi user with only required capabilities
+User=cachydpi
+Group=cachydpi
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+# Capabilities — only NET_ADMIN (nftables + nfqueue) and NET_RAW (raw sockets)
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+# Read-only access to config
+ReadOnlyPaths=/etc/cachydpi
+
+# Runtime directory for metrics socket (/run/cachydpi/)
+RuntimeDirectory=cachydpi
+RuntimeDirectoryMode=0755
+
+# Allow nft command
+ExecSearchPath=/usr/bin:/usr/sbin
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cachydpi
+
+# Resource limits
+LimitNOFILE=65536
+LimitMEMLOCK=65536
+MemoryMax=64M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

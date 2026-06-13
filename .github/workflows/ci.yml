@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev libmnl-dev pkg-config
+
+      - name: Build
+        run: cargo build --all-features
+
+      - name: Clippy
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Unit & comprehensive tests
+        run: cargo test --all-features
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit
+      - run: cargo audit
+
+  performance:
+    name: Performance Checks
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev libmnl-dev pkg-config
+
+      - name: Build release binary
+        run: cargo build --release --all-features
+
+      - name: Check binary size
+        run: |
+          BIN="target/release/cachydpi"
+          SIZE_KB=$(($(stat -c %s "$BIN") / 1024))
+          SIZE_MB=$((SIZE_KB / 1024))
+          echo "Binary size: ${SIZE_MB}MB (${SIZE_KB}KB)"
+          if [ "$SIZE_KB" -gt 10240 ]; then
+            echo "::error::Binary exceeds 10MB limit: ${SIZE_MB}MB"
+            exit 1
+          fi
+          echo "binary_size_kb=$SIZE_KB" >> "$GITHUB_OUTPUT"
+
+      - name: Check dependency count
+        run: |
+          DEP_COUNT=$(cargo tree --all-features 2>/dev/null | wc -l)
+          echo "Dependency tree entries: $DEP_COUNT"
+          if [ "$DEP_COUNT" -gt 300 ]; then
+            echo "::warning::High dependency count: $DEP_COUNT"
+          fi
+
+      - name: Build reproducibility check (incremental)
+        run: |
+          cp target/release/cachydpi /tmp/build1
+          touch src/main.rs
+          cargo build --release --all-features
+          if cmp -s /tmp/build1 target/release/cachydpi; then
+            echo "Incremental build is reproducible"
+          else
+            echo "::warning::Incremental build differs"
+          fi

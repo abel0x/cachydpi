@@ -1,0 +1,3 @@
+# Create the cachydpi system user
+# Type: system user, no home directory, no login shell
+u cachydpi - "CachyDPI DPI bypass daemon" - /usr/bin/nologin

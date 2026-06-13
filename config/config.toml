@@ -1,0 +1,122 @@
+# CachyDPI Configuration
+# /etc/cachydpi/config.toml
+#
+# This file contains the default configuration for CachyDPI.
+# Works with any ISP that uses DPI (Deep Packet Inspection).
+
+[general]
+# NFQUEUE number (must match nftables rules)
+queue_num = 200
+
+# Enable IPv6 support
+ipv6 = true
+
+# Automatically install/remove nftables rules
+manage_rules = true
+
+# DPI bypass mode (1-7):
+#   1 = Passive only (drop forged RST/302 packets)
+#   2 = HTTP request fragmentation
+#   3 = TLS ClientHello SNI fragmentation
+#   4 = Fake packet injection (wrong TTL)
+#   5 = All active techniques (recommended)
+#   6 = Aggressive (all + QUIC desync)
+#   7 = Auto-detect
+mode = 5
+
+[strategies]
+# Passive DPI detection: drop forged RST and 302 redirect packets
+passive_dpi = true
+
+# TCP window size (for SYN packets, 0 = disabled)
+# A low value forces the server to send small segments
+tcp_window_size = 0
+
+# HTTP request split position (0 = auto, middle of Host header)
+http_split_position = 0
+
+# TLS ClientHello split position (0 = auto, middle of SNI)
+tls_split_position = 0
+
+# Fake packet injection
+# WARNING: Disabled by default. Fake packets (wrong TTL ClientHello) can trigger
+# aggressive DPI systems to DROP the connection entirely. Fragmentation alone is
+# the safest and most effective bypass. Enable only if fragmentation alone doesn't
+# work for your ISP.
+fake_packet_enabled = false
+
+# TTL for fake packets (0 = auto-detect from SYN-ACK, recommended)
+# Set manually only if auto-detection doesn't work for your ISP.
+fake_packet_ttl = 0
+
+# Auto TTL detection (recommended for all ISPs)
+auto_ttl = true
+
+# Send fake packet with wrong TCP checksum
+# WARNING: Many DPI systems verify checksums. Also NIC checksum offload may
+# recalculate the checksum before DPI sees it. Disabled by default.
+fake_wrong_checksum = false
+
+# Send fake packet with wrong TCP sequence number
+# WARNING: DPI with TCP connection tracking validates seq numbers. Disabled by default.
+fake_wrong_seq = false
+
+# QUIC/UDP desynchronization (UDP port 443)
+# WARNING: Many ISPs reassemble IP fragments before DPI inspection.
+# IPv6 does not support sender-side fragmentation. Disabled by default.
+quic_desync = false
+
+# ── Advanced DPI bypass (desync) ──
+# These options control additional desync techniques beyond fragmentation.
+# WARNING: desync_first is DISABLED by default because the fake RST packet
+# causes many ISP DPI systems to block the connection entirely. The DPI
+# interprets the fake RST as a real connection close and drops all subsequent
+# traffic. Only enable if you know your ISP's DPI doesn't react this way.
+
+# Desync-first: send fake RST + fake ClientHello with harmless SNI (google.com)
+# before real ClientHello fragments.
+# WARNING: Breaks connections on ISPs with aggressive DPI (Turkish ISPs etc.)
+desync_first = false
+
+# Multi-fragment: split TLS ClientHello into 3 TCP segments instead of 2.
+# Splits at 1-2 bytes into the SNI name, making DPI pattern matching much harder.
+multi_fragment = true
+
+# Disorder: send TLS fragments in reverse order (frag3 → frag2 → frag1).
+# Forces DPI to perform out-of-order TCP reassembly, which many DPI handle poorly.
+disorder = true
+
+[domains]
+# Filtering mode: "none" (all), "blacklist" (listed only), "whitelist" (except listed)
+mode = "blacklist"
+
+# Blacklist file (one domain per line)
+blacklist_file = "/etc/cachydpi/blacklist.txt"
+
+# Whitelist file
+# whitelist_file = "/etc/cachydpi/whitelist.txt"
+
+# Inline blacklist (commonly blocked sites)
+# blacklist = [
+#     "youtube.com",
+#     "twitter.com",
+#     "x.com",
+#     "wikipedia.org",
+#     "reddit.com",
+#     "medium.com",
+#     "imgur.com",
+#     "pastebin.com",
+# ]
+
+# Inline whitelist (skip these domains)
+whitelist = []
+
+[logging]
+# Log level: "error", "warn", "info", "debug", "trace"
+level = "debug"
+
+# Log to journald
+journald = true
+
+# Log to file (optional)
+# file = "/var/log/cachydpi/cachydpi.log"
