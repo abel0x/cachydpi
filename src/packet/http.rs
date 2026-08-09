@@ -31,10 +31,17 @@ impl<'a> HttpRequest<'a> {
             return None;
         }
 
+        // Only the request line needs to be valid UTF-8 to read the method and
+        // URI. The Host header is located by the byte-level search below, and
+        // the request body may be binary (e.g. a POST upload) — requiring the
+        // whole payload to be UTF-8 would reject such requests and skip Host
+        // fragmentation, leaving the domain readable by DPI.
+        let line_end = data.windows(2).position(|w| w == b"\r\n")?;
+        let request_line = std::str::from_utf8(&data[..line_end]).ok()?;
+
         // Check for common HTTP methods
-        let data_str = std::str::from_utf8(data).ok()?;
-        let method_end = data_str.find(' ')?;
-        let method = &data_str[..method_end];
+        let method_end = request_line.find(' ')?;
+        let method = &request_line[..method_end];
 
         if !matches!(
             method,
@@ -44,12 +51,12 @@ impl<'a> HttpRequest<'a> {
         }
 
         // Find URI end
-        let after_method = &data_str[method_end + 1..];
+        let after_method = &request_line[method_end + 1..];
         let uri_end = after_method.find(' ')?;
         let uri = &after_method[..uri_end];
 
-        // Find first line end
-        let first_line_end = data_str.find("\r\n")? + 2;
+        // Byte offset just past the request line's CRLF
+        let first_line_end = line_end + 2;
 
         // Find Host header (case-insensitive byte search — avoids full payload to_lowercase())
         let mut host: Option<String> = None;

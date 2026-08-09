@@ -392,8 +392,15 @@ mod http_fuzzing {
     fn binary_garbage_after_valid_method() {
         let mut data = b"GET / HTTP/1.1\r\n".to_vec();
         data.extend_from_slice(&[0xFF, 0xFE, 0xFD, 0xFC]);
-        // from_utf8 will fail on invalid bytes
-        assert!(http::HttpRequest::parse(&data).is_none());
+        // The request line is valid, so this parses as an HTTP request; the
+        // trailing binary bytes contain no Host header, so `host` is None.
+        // The parser deliberately does not require the whole payload to be
+        // UTF-8 — legitimate requests may carry a binary body, and rejecting
+        // them would skip Host fragmentation
+        // (see unit_tests::http_host_parsed_despite_binary_body).
+        let parsed = http::HttpRequest::parse(&data).expect("valid request line should parse");
+        assert_eq!(parsed.method, "GET");
+        assert!(parsed.host.is_none(), "no Host header present in the garbage");
     }
 
     #[test]

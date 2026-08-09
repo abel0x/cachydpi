@@ -191,6 +191,57 @@ fn http_is_redirect() {
     assert!(!http::is_http_redirect(b"GET /"));
 }
 
+#[test]
+fn http_host_parsed_despite_binary_body() {
+    // A POST whose first TCP segment carries ASCII request line + headers
+    // followed by a binary (non-UTF-8) body — e.g. a file/octet-stream upload.
+    // The Host header is plain ASCII and must still be extracted; the body
+    // must not defeat parsing. Requiring the whole payload to be valid UTF-8
+    // wrongly rejected such requests, so their Host was never fragmented.
+    let mut req: Vec<u8> =
+        b"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\n".to_vec();
+    req.extend_from_slice(&[0xff, 0xfe, 0xfd, 0x80]); // binary body bytes
+    assert!(
+        std::str::from_utf8(&req).is_err(),
+        "test payload must contain non-UTF-8 body bytes to exercise the bug",
+    );
+
+    let parsed =
+        http::HttpRequest::parse(&req).expect("HTTP request with a binary body should still parse");
+    assert_eq!(parsed.method, "POST");
+    assert_eq!(parsed.host.as_deref(), Some("example.com"));
+}
+
+#[test]
+fn http_split_point_found_despite_binary_body() {
+    // The user-visible effect of the bug: with a binary body, the auto split
+    // path (find_http_split_point) returned None, so the Host travelled in a
+    // single segment fully readable by DPI. It must instead split inside the
+    // Host value.
+    let mut req: Vec<u8> = b"POST /u HTTP/1.1\r\nHost: blocked-site.com\r\n\r\n".to_vec();
+    req.extend_from_slice(&[0x00, 0xff, 0x80, 0xfe]); // binary body bytes
+    let req = req.as_slice();
+    let split = http::find_http_split_point(req)
+        .expect("split point should be found for a POST with a binary body");
+
+    // The split must fall strictly inside the Host value so neither segment
+    // carries the whole domain.
+    let host_start = req
+        .windows(6)
+        .position(|w| w.eq_ignore_ascii_case(b"host: "))
+        .map(|p| p + 6)
+        .expect("Host header present");
+    let host_end = host_start
+        + req[host_start..]
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .expect("Host header terminated");
+    assert!(
+        split > host_start && split < host_end,
+        "split {split} should land within the Host value [{host_start}, {host_end})",
+    );
+}
+
 // ── Domain Filtering Tests ──
 
 #[test]
