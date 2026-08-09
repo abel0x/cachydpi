@@ -592,6 +592,21 @@ mod ip_fuzzing {
     }
 
     #[test]
+    fn set_ipv4_ttl_ihl_beyond_buffer_does_not_panic() {
+        // The buffer is a valid minimum length (20), so it passes the length
+        // check, but the IHL nibble claims a 60-byte header. Slicing
+        // packet[..60] to recompute the checksum must not panic on such a
+        // malformed/truncated packet — the same guard IpHeader::parse applies
+        // (see ipv4_ihl_larger_than_data).
+        let mut pkt = [0u8; 20];
+        pkt[0] = 0x4F; // version=4, IHL=15 → claims a 60-byte header
+        let before = pkt;
+        ip::set_ipv4_ttl(&mut pkt, 42); // must not panic
+        // Malformed header ⇒ left untouched, not TTL-set with a stale checksum.
+        assert_eq!(pkt, before, "malformed packet must be left unmodified");
+    }
+
+    #[test]
     fn build_ipv4_header_and_verify() {
         let src = Ipv4Addr::new(192, 168, 1, 1);
         let dst = Ipv4Addr::new(10, 0, 0, 1);

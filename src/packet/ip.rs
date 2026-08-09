@@ -261,9 +261,17 @@ pub fn set_ipv4_ttl(packet: &mut [u8], new_ttl: u8) {
         return;
     }
 
+    // The IHL field is attacker-influenced; a header length that exceeds the
+    // buffer (or is below the minimum) must not be used to slice, or the
+    // ipv4_checksum call below would panic. Bail before mutating so a malformed
+    // packet is left untouched rather than TTL-modified with a stale checksum.
+    let ihl = (packet[0] & 0x0F) as usize * 4;
+    if ihl < IPV4_MIN_HEADER || packet.len() < ihl {
+        return;
+    }
+
     packet[8] = new_ttl;
     // Recalculate header checksum
-    let ihl = (packet[0] & 0x0F) as usize * 4;
     packet[10] = 0;
     packet[11] = 0;
     let cksum = ipv4_checksum(&packet[..ihl]);
