@@ -71,6 +71,11 @@ package() {
     # Install documentation
     install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
     install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # Pristine config kept as documentation: /etc/cachydpi/config.toml is a
+    # backup= file and is never replaced, so recovering from a damaged one
+    # needs a reference copy to restore from (see Troubleshooting in README).
+    install -Dm644 "config/config.toml" "$pkgdir/usr/share/doc/$pkgname/config.toml"
 }
 
 post_install() {

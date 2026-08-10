@@ -275,6 +275,45 @@ sudo systemctl restart systemd-resolved
 
 ## Troubleshooting
 
+### The service refuses to start because of the config
+
+CachyDPI will not start with a config file it cannot honour. Substituting
+built-in defaults would silently swap your domain filter for a different one,
+so a config that exists but is unreadable, malformed, empty or missing its
+`[domains]` section is a hard error. The journal names the file and the
+problem:
+
+```bash
+journalctl -u cachydpi -e --no-pager   # says which file and what is wrong
+```
+
+Recovery, in order of preference:
+
+```bash
+# 1. Restore the shipped config (your old one is kept as .bad):
+sudo mv /etc/cachydpi/config.toml /etc/cachydpi/config.toml.bad
+sudo cp /usr/share/doc/cachydpi/config.toml /etc/cachydpi/config.toml
+
+# 2. Or start from built-in defaults by removing the file entirely.
+#    Defaults are restrictive: blacklist mode with no list, so nothing is
+#    bypassed until you configure it.
+sudo mv /etc/cachydpi/config.toml /etc/cachydpi/config.toml.bad
+
+# 3. After a package upgrade, merge your settings with the new version:
+ls /etc/cachydpi/*.pacnew
+
+sudo systemctl restart cachydpi
+```
+
+A minimal valid config needs the `[domains]` section with a `mode`:
+
+```toml
+[domains]
+mode = "blacklist"   # or "whitelist", or "none" to bypass every site
+```
+
+### Other problems
+
 ```bash
 # Service won't start — read the journal, then run in the foreground with trace logging:
 journalctl -u cachydpi -e --no-pager

@@ -1288,9 +1288,14 @@ journald = false
 
     #[test]
     fn partial_config_uses_defaults() {
+        // [domains] is required — a config truncated before it must not be
+        // silently completed — but every other section still defaults.
         let toml = r#"
 [general]
 queue_num = 150
+
+[domains]
+mode = "blacklist"
 "#;
         let f = write_temp_config(toml);
         let config = Config::load(f.path()).unwrap();
@@ -1332,6 +1337,9 @@ queue_num = 150
 [general]
 queue_num = 200
 unknown_field = "should be ignored"
+
+[domains]
+mode = "blacklist"
 
 [nonexistent_section]
 foo = "bar"

@@ -15,16 +15,25 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 /// Main configuration structure
+///
+/// Every section defaults except `[domains]`, which is required on purpose.
+/// A config truncated part-way through — the most likely way one gets damaged —
+/// stays valid TOML and simply loses its later sections, so a defaulted
+/// `[domains]` would silently replace the operator's domain filter with a
+/// built-in one. Requiring the section turns all of those into one clear
+/// deserialization error instead.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Config {
     /// General settings
+    #[serde(default)]
     pub general: GeneralConfig,
     /// DPI bypass strategy settings
+    #[serde(default)]
     pub strategies: StrategyConfig,
-    /// Domain filtering
+    /// Domain filtering — required, see above
     pub domains: DomainConfig,
     /// Logging configuration
+    #[serde(default)]
     pub logging: LogConfig,
     /// Compiled domain set for O(1) lookup (not serialized)
     #[serde(skip)]
@@ -107,17 +116,24 @@ impl std::fmt::Display for DomainMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct DomainConfig {
-    /// Mode: none, blacklist, or whitelist
+    /// Mode: none, blacklist, or whitelist.
+    ///
+    /// Required rather than defaulted: which traffic gets rewritten is the
+    /// security-relevant decision in this file, so it has to be stated, not
+    /// inferred from a half-written config.
     pub mode: DomainMode,
     /// Path to blacklist file
+    #[serde(default)]
     pub blacklist_file: Option<String>,
     /// Path to whitelist file
+    #[serde(default)]
     pub whitelist_file: Option<String>,
     /// Inline blacklist domains
+    #[serde(default)]
     pub blacklist: Vec<String>,
     /// Inline whitelist domains
+    #[serde(default)]
     pub whitelist: Vec<String>,
 }
 
@@ -206,7 +222,20 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let content = match fs::read_to_string(path) {
             Ok(content) => content,
+            // Only a genuinely absent file may fall back. This arm is a
+            // whitelist of exactly one error kind; everything else — EACCES,
+            // ENOTDIR, EIO — lands below and is fatal.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // A dangling symlink reports NotFound too, but the path is
+                // there and the installation is broken, which is not the same
+                // as never having been configured.
+                if fs::symlink_metadata(path).is_ok() {
+                    bail!(
+                        "config path {} exists but does not resolve (dangling symlink?) — \
+                         fix the link or remove it to start from built-in defaults",
+                        path.display()
+                    );
+                }
                 info!(
                     "config file not found at {}, using defaults",
                     path.display()
@@ -214,24 +243,38 @@ impl Config {
                 return Ok(Config::default());
             }
             Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("failed to read config file: {}", path.display()));
+                return Err(e).with_context(|| {
+                    format!(
+                        "cannot read config file {} — check that it exists and is readable \
+                         by the cachydpi user",
+                        path.display()
+                    )
+                });
             }
         };
 
-        // An empty file is valid TOML and would deserialize into the full set of
-        // defaults without a single warning, so a truncated config would quietly
-        // replace the operator's domain filter. Treat it as the corruption it is.
+        // Required fields already reject an empty file (`[domains]` would be
+        // missing), but "missing field `domains`" is a poor description of a
+        // truncated write. Keep the dedicated check purely for the message.
         if content.trim().is_empty() {
             bail!(
-                "config file {} is empty — refusing to fall back to built-in defaults; \
-                 restore it or delete it to start from defaults deliberately",
+                "config file {} is empty — it was probably truncated by an interrupted \
+                 write; restore it from /usr/share/doc/cachydpi/, or delete it to start \
+                 from built-in defaults",
                 path.display()
             );
         }
 
-        let config: Config = toml::from_str(&content)
-            .with_context(|| format!("failed to parse config file: {}", path.display()))?;
+        let config: Config = toml::from_str(&content).with_context(|| {
+            format!(
+                "config file {} is not valid — the daemon will not start with settings it \
+                 cannot honour; fix the reported field, or move the file aside to fall \
+                 back to built-in defaults (mv {} {}.bad)",
+                path.display(),
+                path.display(),
+                path.display()
+            )
+        })?;
 
         debug!("loaded config from {}", path.display());
         Ok(config)
@@ -404,6 +447,23 @@ impl Config {
         self.domain_set = list.iter().map(|d| d.to_lowercase()).collect();
         info!(domains = self.domain_set.len(), mode = %self.domains.mode, "domain filter ready");
 
+        // An empty list is not an error, but it makes the daemon look healthy
+        // while doing nothing (blacklist) or everything (whitelist). Say which,
+        // so a silent no-op is not mistaken for a working bypass.
+        if self.domain_set.is_empty() {
+            match self.domains.mode {
+                DomainMode::Blacklist => warn!(
+                    "domain list is empty — no traffic will be bypassed; add domains to \
+                     the blacklist file or set [domains] mode = \"none\" to bypass every site"
+                ),
+                DomainMode::Whitelist => warn!(
+                    "whitelist is empty — every domain will be bypassed, which is what \
+                     mode = \"none\" means; list the domains to exclude, or switch mode"
+                ),
+                DomainMode::None => {}
+            }
+        }
+
         Ok(())
     }
 
@@ -538,6 +598,74 @@ mod load_tests {
                 "a {name} config must be rejected, not treated as all-defaults"
             );
         }
+    }
+
+    /// A config truncated part-way through is still valid TOML — it just loses
+    /// its later sections. That is the most likely way one gets damaged, and it
+    /// walks straight past an emptiness check, so `[domains]` being required is
+    /// what catches it.
+    #[test]
+    fn truncated_config_is_a_hard_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // Cut after a complete [general] section: parses fine, no [domains].
+        let truncated = "[general]\nqueue_num = 200\nipv6 = true\nmode = 5\n";
+        assert!(
+            toml::from_str::<toml::Value>(truncated).is_ok(),
+            "the fixture must be valid TOML, otherwise it proves nothing"
+        );
+
+        let path = dir.path().join("config.toml");
+        fs::write(&path, truncated).unwrap();
+        assert!(
+            Config::load(&path).is_err(),
+            "a config truncated before [domains] must not be silently completed"
+        );
+    }
+
+    /// Whitespace-only and comment-only files are valid TOML with zero keys and
+    /// would otherwise deserialize into a full set of defaults.
+    #[test]
+    fn whitespace_and_comment_only_configs_are_hard_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            ("whitespace", "   \n\t\n   \n"),
+            ("comments", "# CachyDPI config\n# nothing else survived\n"),
+            ("comments-and-blanks", "\n# just a note\n\n   \n"),
+        ] {
+            let path = dir.path().join(format!("{name}.toml"));
+            fs::write(&path, body).unwrap();
+            assert!(
+                Config::load(&path).is_err(),
+                "a {name}-only config must be rejected, not treated as all-defaults"
+            );
+        }
+    }
+
+    /// A `[domains]` section that exists but does not state a mode is just as
+    /// under-specified as a missing one.
+    #[test]
+    fn domains_section_without_mode_is_a_hard_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[domains]\nblacklist_file = \"/etc/cachydpi/blacklist.txt\"\n").unwrap();
+        assert!(
+            Config::load(&path).is_err(),
+            "[domains] without a mode must be rejected"
+        );
+    }
+
+    /// A dangling symlink reports NotFound like a missing file, but the path is
+    /// there and the install is broken — that must not silently use defaults.
+    #[test]
+    fn dangling_config_symlink_is_a_hard_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(dir.path().join("gone.toml"), &link).unwrap();
+
+        assert!(
+            Config::load(&link).is_err(),
+            "a dangling config symlink must not be treated as a fresh install"
+        );
     }
 
     /// The property behind all four cases: no way of loading a config can end
