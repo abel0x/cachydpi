@@ -91,6 +91,11 @@ fn main() -> Result<()> {
     // Check prerequisites
     cachydpi::privileges::check_capabilities().context("capability check failed")?;
 
+    // Validate the privilege drop before any nftables rules exist: failing
+    // afterwards would exit with rules already installed, leaving behind the
+    // stale ruleset that teardown is meant to prevent.
+    cachydpi::privileges::preflight_drop_root().context("privilege drop preflight failed")?;
+
     rules::check_nft_available().context("nftables not available")?;
 
     // Install panic hook to clean up nftables rules on crash
@@ -162,13 +167,11 @@ fn main() -> Result<()> {
         "FATAL: failed to drop capabilities — refusing to continue with elevated privileges",
     )?;
 
-    // Switch to non-root user if possible (graceful: NoNewPrivileges may block setuid)
-    if let Err(e) = cachydpi::privileges::drop_root() {
-        warn!(
-            "could not drop root (non-fatal under NoNewPrivileges): {}",
-            e
-        );
-    }
+    // Switch to a non-root user where that is possible. The preflight above
+    // already established which path applies and that it can succeed, so a
+    // failure here is a real one: continuing would mean running with an
+    // unclear privilege state.
+    cachydpi::privileges::drop_root().context("FATAL: failed to drop root privileges")?;
 
     // Initialize strategy engine
     let mode = BypassMode::from_mode_number(config.general.mode);
