@@ -5,12 +5,28 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Destinations are overridable so the script can be exercised against a
+# sandbox instead of the live system.
+BIN_DEST="${CACHYDPI_BIN_DEST:-/usr/bin/cachydpi}"
+CONFIG_DEST="${CACHYDPI_CONFIG_DEST:-/etc/cachydpi/config.toml}"
+
 echo "=== CachyDPI Deploy ==="
 echo "Deploying binary..."
-cp "$SCRIPT_DIR/target/release/cachydpi" /usr/bin/cachydpi
+install -Dm755 "$SCRIPT_DIR/target/release/cachydpi" "$BIN_DEST"
 
+# Never overwrite a config that is already in place. It holds operator
+# choices — the domain filter mode above all — and replacing it does not
+# fail loudly the way a corrupt config does: the daemon starts happily with
+# settings nobody asked for. This mirrors what install.sh does and what
+# pacman does for the backup= entries in PKGBUILD.
 echo "Deploying config..."
-cp "$SCRIPT_DIR/config/config.toml" /etc/cachydpi/config.toml
+if [[ -e "$CONFIG_DEST" ]]; then
+    install -Dm644 "$SCRIPT_DIR/config/config.toml" "$CONFIG_DEST.new"
+    echo "  existing config left untouched; shipped version written to $CONFIG_DEST.new"
+else
+    install -Dm644 "$SCRIPT_DIR/config/config.toml" "$CONFIG_DEST"
+    echo "  installed $CONFIG_DEST"
+fi
 
 echo "Restarting service..."
 systemctl daemon-reload
