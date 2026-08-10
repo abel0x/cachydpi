@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/packet/mod.rs — Packet parsing module
 //
 // Provides zero-copy parsing of IP, TCP, UDP, TLS, and HTTP packets.

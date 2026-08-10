@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/strategies/fake_packet.rs — Fake packet injection
 //
 // Injects crafted "fake" packets that confuse DPI systems but are

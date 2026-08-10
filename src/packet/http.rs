@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/packet/http.rs — HTTP request parsing
 //
 // Parses HTTP/1.x requests to extract the Host header and find

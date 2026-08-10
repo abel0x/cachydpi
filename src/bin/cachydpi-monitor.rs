@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/bin/cachydpi-monitor.rs — Real-time TUI dashboard for CachyDPI
 //
 // Connects to the running CachyDPI daemon via Unix socket, reads JSON

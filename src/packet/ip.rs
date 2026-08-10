@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/packet/ip.rs — IPv4 and IPv6 header parsing
 //
 // Provides zero-copy parsing of IP headers with accessor methods

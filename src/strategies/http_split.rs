@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/strategies/http_split.rs — HTTP request fragmentation
 //
 // Splits an outgoing HTTP request into two or more TCP segments

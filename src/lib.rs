@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/lib.rs — CachyDPI library root
 //
 // Exports all modules for the CachyDPI DPI bypass engine.

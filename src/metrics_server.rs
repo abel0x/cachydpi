@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/metrics_server.rs — Unix socket server for metrics export
 //
 // Runs in a dedicated thread. Accepts connections on a Unix domain socket,

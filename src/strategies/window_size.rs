@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/strategies/window_size.rs — TCP Window Size manipulation
 //
 // Modifies the TCP window size in outgoing SYN packets to force

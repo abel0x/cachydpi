@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/packet/tls.rs — TLS ClientHello parsing
 //
 // Parses TLS ClientHello messages to extract the SNI (Server Name Indication)

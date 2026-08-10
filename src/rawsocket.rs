@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/rawsocket.rs — Raw socket for injecting crafted packets
 //
 // Uses AF_INET/SOCK_RAW/IPPROTO_RAW to send hand-crafted IP packets

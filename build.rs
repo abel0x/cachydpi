@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // build.rs — Link to libnetfilter_queue and libmnl at compile time
 fn main() {
     // libnetfilter_queue: userspace library for nfqueue

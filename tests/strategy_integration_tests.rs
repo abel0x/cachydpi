@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // tests/strategy_integration_tests.rs — Strategy engine integration tests
 //
 // Tests that StrategyEngine correctly evaluates real-world-like packets

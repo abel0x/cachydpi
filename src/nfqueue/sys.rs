@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/nfqueue/sys.rs — Raw FFI bindings to libnetfilter_queue
 //
 // These bindings provide direct access to the C library functions.

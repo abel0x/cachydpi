@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // tests/comprehensive_tests.rs — Comprehensive CachyDPI Test Suite
 //
 // Covers: Parser fuzzing (TLS/HTTP/IP/TCP/UDP), privilege escalation,

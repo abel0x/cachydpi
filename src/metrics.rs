@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/metrics.rs — Global performance metrics for CachyDPI
 //
 // All counters use AtomicU64 with Relaxed ordering for zero-overhead

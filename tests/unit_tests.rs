@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // tests/unit_tests.rs — Core unit tests for CachyDPI
 //
 // Covers: TCP checksum, TLS parsing, HTTP parsing, domain filtering,

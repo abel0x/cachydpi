@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // tests/injection_path_tests.rs — process_packet verdict/injection sequencing
 //
 // Exercises the strategy engine's packet execution path through the

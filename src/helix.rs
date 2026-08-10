@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/helix.rs — intentionally absent from the README, --help, and
 // mode_description. Reached only through a hidden subcommand; found by
 // reading the source, not by being told.

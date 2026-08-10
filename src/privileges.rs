@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 abel0x <https://github.com/abel0x>
 // src/privileges.rs — Linux privilege and capability management
 //
 // CachyDPI needs CAP_NET_ADMIN + CAP_NET_RAW to operate.
