@@ -230,6 +230,22 @@ impl Drop for NftRules {
     }
 }
 
+/// Check if nftables is available on the system
+pub fn check_nft_available() -> Result<()> {
+    let output = std::process::Command::new("nft")
+        .arg("--version")
+        .output()
+        .context("nft command not found — install nftables: pacman -S nftables")?;
+
+    if !output.status.success() {
+        bail!("nft --version failed");
+    }
+
+    let version = String::from_utf8_lossy(&output.stdout);
+    debug!("nftables version: {}", version.trim());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,20 +340,4 @@ mod tests {
             .remove()
             .expect("teardown on a clean system must not error");
     }
-}
-
-/// Check if nftables is available on the system
-pub fn check_nft_available() -> Result<()> {
-    let output = std::process::Command::new("nft")
-        .arg("--version")
-        .output()
-        .context("nft command not found — install nftables: pacman -S nftables")?;
-
-    if !output.status.success() {
-        bail!("nft --version failed");
-    }
-
-    let version = String::from_utf8_lossy(&output.stdout);
-    debug!("nftables version: {}", version.trim());
-    Ok(())
 }

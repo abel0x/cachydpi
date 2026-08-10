@@ -53,6 +53,27 @@ impl RateLimiter {
     }
 }
 
+/// Proof that a packet was actually handed to the kernel.
+///
+/// Dropping an intercepted packet is only legitimate once its replacement is on
+/// the wire, so the send functions return this witness instead of `()`. The
+/// field is private, which makes `Sent` unforgeable outside this module: a new
+/// early return here cannot quietly answer `Ok(())` without sending, it has to
+/// name [`Sent::confirmed`] and claim delivery out loud.
+///
+/// This is a witness by convention, not a linear type — Rust cannot prove the
+/// syscall happened. It converts a silent mistake into a visible, greppable
+/// assertion, which is as far as the type system takes us here.
+#[must_use = "a Sent witness exists to justify dropping the original packet"]
+pub struct Sent(());
+
+impl Sent {
+    /// Call only where the kernel has just accepted the packet.
+    pub fn confirmed() -> Self {
+        Sent(())
+    }
+}
+
 /// A raw socket for sending crafted IP packets
 pub struct RawSocket {
     /// IPv4 raw socket
@@ -102,48 +123,43 @@ impl RawSocket {
             }
         }
 
+        // When IPv6 is enabled, nftables steers IPv6 traffic into the queue and
+        // the engine will build IPv6 replacement packets for it. Not having a
+        // socket to send them on is therefore a startup failure, not a
+        // per-packet condition to warn about at line rate: without it every
+        // IPv6 fragment would have to be abandoned. The operator can run
+        // IPv4-only with --no-ipv6 (or ipv6 = false), which also stops the ip6
+        // rules from being installed.
         let socket_v6 = if ipv6 {
-            match Socket::new(
+            let s = Socket::new(
                 Domain::IPV6,
                 Type::RAW,
                 Some(Protocol::from(libc::IPPROTO_RAW)),
-            ) {
-                Ok(s) => match Self::enable_ipv6_hdrincl(&s) {
-                    Ok(()) => {
-                        // Mark outgoing packets so nftables can skip them
-                        unsafe {
-                            let mark_val = CACHYDPI_MARK;
-                            libc::setsockopt(
-                                s.as_raw_fd(),
-                                libc::SOL_SOCKET,
-                                libc::SO_MARK,
-                                &mark_val as *const u32 as *const libc::c_void,
-                                std::mem::size_of::<u32>() as libc::socklen_t,
-                            );
-                        }
-                        Some(s)
-                    }
-                    // Without IPV6_HDRINCL the kernel would overwrite our crafted
-                    // IPv6 header, silently mangling every injected packet. Refuse
-                    // to keep a socket that can't honestly inject — disable IPv6
-                    // rather than pretend it works.
-                    Err(e) => {
-                        warn!(
-                            "IPV6_HDRINCL unavailable ({e}) — IPv6 header injection is \
-                             unsupported on this kernel (needs Linux >= 4.5); disabling \
-                             IPv6 injection"
-                        );
-                        None
-                    }
-                },
-                Err(e) => {
-                    warn!(
-                        "IPv6 raw socket creation failed: {} — IPv6 injection disabled",
-                        e
-                    );
-                    None
-                }
+            )
+            .context(
+                "failed to create IPv6 raw socket — need CAP_NET_RAW, \
+                 or run IPv4-only with --no-ipv6",
+            )?;
+
+            // Without IPV6_HDRINCL the kernel overwrites our crafted IPv6
+            // header, silently mangling every injected packet.
+            Self::enable_ipv6_hdrincl(&s).context(
+                "IPV6_HDRINCL unavailable — IPv6 header injection needs Linux >= 4.5; \
+                 run IPv4-only with --no-ipv6",
+            )?;
+
+            // Mark outgoing packets so nftables can skip them
+            unsafe {
+                let mark_val = CACHYDPI_MARK;
+                libc::setsockopt(
+                    s.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_MARK,
+                    &mark_val as *const u32 as *const libc::c_void,
+                    std::mem::size_of::<u32>() as libc::socklen_t,
+                );
             }
+            Some(s)
         } else {
             None
         };
@@ -219,9 +235,12 @@ impl RawSocket {
     ///
     /// The packet must be a complete IP packet (including IP header).
     /// For IPv4, IP_HDRINCL means the kernel won't add a header.
-    pub fn send_unlimited(&self, packet: &[u8]) -> Result<()> {
+    pub fn send_unlimited(&self, packet: &[u8]) -> Result<Sent> {
+        // Every path that does not reach the kernel must be an error: the
+        // caller drops the original packet on `Ok`, so answering `Ok` without
+        // sending silently destroys the data it was replacing.
         if packet.is_empty() {
-            return Ok(());
+            bail!("refusing to report an empty packet as sent");
         }
 
         let version = (packet[0] >> 4) & 0x0F;
@@ -229,10 +248,7 @@ impl RawSocket {
         match version {
             4 => self.send_ipv4(packet),
             6 => self.send_ipv6(packet),
-            _ => {
-                warn!(version = version, "unknown IP version, dropping packet");
-                Ok(())
-            }
+            _ => bail!("unknown IP version {version}; nothing was sent"),
         }
     }
 
@@ -249,10 +265,12 @@ impl RawSocket {
             warn!("raw socket rate limit exceeded, dropping injected decoy packet");
             return Ok(());
         }
-        self.send_unlimited(packet)
+        // Decoys carry no user data, so the witness is discarded here: nothing
+        // is dropped on the strength of a decoy having been sent.
+        self.send_unlimited(packet).map(|_| ())
     }
 
-    fn send_ipv4(&self, packet: &[u8]) -> Result<()> {
+    fn send_ipv4(&self, packet: &[u8]) -> Result<Sent> {
         if packet.len() < 20 {
             bail!("IPv4 packet too short: {} bytes", packet.len());
         }
@@ -265,7 +283,7 @@ impl RawSocket {
         match self.socket_v4.send_to(packet, &sock_addr) {
             Ok(n) => {
                 trace!(len = n, dst = %dst_ip, "sent raw IPv4 packet");
-                Ok(())
+                Ok(Sent::confirmed())
             }
             Err(e) => {
                 // EPERM can happen if nftables OUTPUT rules block our packet
@@ -277,13 +295,16 @@ impl RawSocket {
         }
     }
 
-    fn send_ipv6(&self, packet: &[u8]) -> Result<()> {
+    fn send_ipv6(&self, packet: &[u8]) -> Result<Sent> {
         let socket = match &self.socket_v6 {
+            // With IPv6 enabled the socket is created at startup or the daemon
+            // refuses to run, so reaching this arm means an IPv6 packet turned
+            // up while IPv6 processing was off — most likely a leftover ip6
+            // nftables rule. It has to be an error: answering `Ok` would drop
+            // the original packet and send nothing in its place, black-holing
+            // the connection.
+            None => bail!("IPv6 packet but IPv6 injection is disabled; nothing was sent"),
             Some(s) => s,
-            None => {
-                warn!("IPv6 packet but no IPv6 raw socket available");
-                return Ok(());
-            }
         };
 
         if packet.len() < 40 {
@@ -300,7 +321,7 @@ impl RawSocket {
         match socket.send_to(packet, &sock_addr) {
             Ok(n) => {
                 trace!(len = n, dst = %dst_ip, "sent raw IPv6 packet");
-                Ok(())
+                Ok(Sent::confirmed())
             }
             Err(e) => Err(e).context("raw socket sendto() (IPv6) failed"),
         }

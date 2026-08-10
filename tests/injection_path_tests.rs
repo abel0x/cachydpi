@@ -70,12 +70,14 @@ struct MockInjector {
 }
 
 impl PacketInjector for MockInjector {
-    fn send_data(&self, packet: &[u8]) -> Result<()> {
+    fn send_data(&self, packet: &[u8]) -> Result<cachydpi::rawsocket::Sent> {
         if self.fail_data {
             bail!("simulated data injection failure");
         }
         self.log.lock().unwrap().push(Event::DataSent(packet.len()));
-        Ok(())
+        // The mock really did deliver the packet to its destination (the log),
+        // so claiming delivery here is truthful.
+        Ok(cachydpi::rawsocket::Sent::confirmed())
     }
     fn send_decoy(&self, packet: &[u8]) -> Result<()> {
         if self.fail_decoy {
@@ -297,6 +299,65 @@ fn decoy_failure_does_not_break_the_bypass() {
     assert!(
         ev.contains(&Event::Drop(PACKET_ID)),
         "bypass must complete (original dropped) despite decoy failure; events: {ev:?}"
+    );
+}
+
+/// A real RawSocket built without IPv6 must refuse to "send" an IPv6 packet
+/// rather than reporting success. Reporting success made the caller drop the
+/// original packet while nothing replaced it, black-holing the connection.
+///
+/// Needs CAP_NET_RAW for the IPv4 socket, so it skips on a plain `cargo test`:
+///   unshare -Urn cargo test --test injection_path_tests
+#[test]
+fn raw_socket_without_ipv6_refuses_to_claim_an_ipv6_send() {
+    let socket = match cachydpi::rawsocket::RawSocket::new(false) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("skipping: no CAP_NET_RAW (try `unshare -Urn`)");
+            return;
+        }
+    };
+
+    // Minimal well-formed IPv6 header (version nibble 6, 40 bytes).
+    let mut ipv6_packet = vec![0u8; 40];
+    ipv6_packet[0] = 0x60;
+    ipv6_packet[6] = 6; // next header: TCP
+
+    let result = socket.send_unlimited(&ipv6_packet);
+    assert!(
+        result.is_err(),
+        "an IPv6 packet with IPv6 injection disabled must not be reported as sent"
+    );
+}
+
+/// The invariant, exercised through the whole pipeline: when the replacement
+/// packets cannot be delivered, the original must be accepted (the existing
+/// accept_unfragmented fail-safe), never dropped. Dropping it without a
+/// replacement is what stalls the connection.
+#[test]
+fn undeliverable_replacement_accepts_the_original_instead_of_dropping_it() {
+    let (log, queue, injector) = harness(true, false); // every data send fails
+    let engine = make_engine(false);
+    let pkt = build_tls_client_hello_packet("www.blockedsite.com");
+
+    let result = process_packet(
+        &engine,
+        &queue,
+        &injector,
+        PACKET_ID,
+        &pkt,
+        Direction::Outbound,
+    );
+
+    let ev = events(&log);
+    assert!(result.is_ok(), "the fallback must not surface as an error");
+    assert!(
+        !ev.contains(&Event::Drop(PACKET_ID)),
+        "the original must not be dropped when nothing replaced it; events: {ev:?}"
+    );
+    assert!(
+        ev.contains(&Event::Accept(PACKET_ID)),
+        "the original must be accepted unfragmented instead; events: {ev:?}"
     );
 }
 

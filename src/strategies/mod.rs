@@ -17,14 +17,14 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{debug, info, trace, warn};
 
 use crate::config::Config;
 use crate::metrics::{EventLevel, METRICS, epoch_ms};
 use crate::nfqueue::NfQueue;
 use crate::packet::{self, Direction, ParsedPacket};
-use crate::rawsocket::RawSocket;
+use crate::rawsocket::{RawSocket, Sent};
 
 /// Action to take for a packet after strategy evaluation
 #[derive(Debug)]
@@ -717,7 +717,9 @@ pub trait VerdictSink {
 ///   Implementations may drop them (e.g. rate limiting) and still
 ///   return `Ok`.
 pub trait PacketInjector {
-    fn send_data(&self, packet: &[u8]) -> Result<()>;
+    /// Returns proof of delivery, which is what makes dropping the original
+    /// packet legitimate. See [`Sent`].
+    fn send_data(&self, packet: &[u8]) -> Result<Sent>;
     fn send_decoy(&self, packet: &[u8]) -> Result<()>;
 }
 
@@ -734,7 +736,7 @@ impl VerdictSink for NfQueue {
 }
 
 impl PacketInjector for RawSocket {
-    fn send_data(&self, packet: &[u8]) -> Result<()> {
+    fn send_data(&self, packet: &[u8]) -> Result<Sent> {
         self.send_unlimited(packet)
     }
     fn send_decoy(&self, packet: &[u8]) -> Result<()> {
@@ -743,10 +745,30 @@ impl PacketInjector for RawSocket {
 }
 
 /// Send every fragment carrying real user data, failing fast on the first error.
-fn send_fragments<I: PacketInjector>(injector: &I, fragments: &[Vec<u8>]) -> Result<()> {
+///
+/// Yields the [`Sent`] witness of the last fragment, which is what lets the
+/// caller drop the original. An empty fragment list produces no witness and is
+/// an error: there is nothing replacing the original, so it must not be dropped.
+fn send_fragments<I: PacketInjector>(injector: &I, fragments: &[Vec<u8>]) -> Result<Sent> {
+    let mut delivered: Option<Sent> = None;
     for frag in fragments {
-        injector.send_data(frag)?;
+        delivered = Some(injector.send_data(frag)?);
     }
+    delivered.context("no fragments to send in place of the original packet")
+}
+
+/// Drop the intercepted packet now that its replacement is on the wire.
+///
+/// Taking the [`Sent`] witness by value is the point: the only way to reach a
+/// `verdict_drop` on the fragmenting paths is to hand over proof that something
+/// was actually sent instead.
+fn drop_replaced_original<Q: VerdictSink>(
+    queue: &Q,
+    packet_id: u32,
+    _delivered: Sent,
+) -> Result<()> {
+    queue.verdict_drop(packet_id)?;
+    METRICS.out_fragmented.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
@@ -875,10 +897,7 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
             // injection fails we can still fall back to accepting it instead
             // of silently losing the data.
             match send_fragments(raw_socket, &fragments) {
-                Ok(()) => {
-                    queue.verdict_drop(packet_id)?;
-                    METRICS.out_fragmented.fetch_add(1, Ordering::Relaxed);
-                }
+                Ok(delivered) => drop_replaced_original(queue, packet_id, delivered)?,
                 Err(e) => accept_unfragmented(queue, packet_id, e)?,
             }
         }
@@ -929,10 +948,7 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
             }
 
             match send_fragments(raw_socket, &fragments) {
-                Ok(()) => {
-                    queue.verdict_drop(packet_id)?;
-                    METRICS.out_fragmented.fetch_add(1, Ordering::Relaxed);
-                }
+                Ok(delivered) => drop_replaced_original(queue, packet_id, delivered)?,
                 Err(e) => accept_unfragmented(queue, packet_id, e)?,
             }
         }
