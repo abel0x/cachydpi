@@ -42,6 +42,10 @@ fn main() -> Result<()> {
     });
     config.apply_cli_overrides(&cli);
 
+    // Reject invalid values that the config-file path can smuggle past clap
+    // (e.g. queue_num = 65535, whose inbound queue would wrap to 0).
+    config.validate().context("invalid configuration")?;
+
     // Load domain lists from external files
     config
         .load_domain_lists()

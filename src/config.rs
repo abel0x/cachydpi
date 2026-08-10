@@ -201,6 +201,22 @@ impl Config {
         Ok(config)
     }
 
+    /// Validate configuration invariants that serde/toml cannot express.
+    ///
+    /// The CLI parser bounds `queue_num` to `0..=65534`, but values read from
+    /// config.toml bypass that check. Enforce the same bound here: the inbound
+    /// NFQUEUE uses `queue_num + 1`, which for 65535 would wrap past `u16` and
+    /// silently queue inbound traffic to queue 0.
+    pub fn validate(&self) -> Result<()> {
+        if self.general.queue_num > 65534 {
+            anyhow::bail!(
+                "general.queue_num must be <= 65534 (got {}) — the inbound NFQUEUE uses queue_num + 1",
+                self.general.queue_num
+            );
+        }
+        Ok(())
+    }
+
     /// Apply CLI overrides to the config.
     ///
     /// Precedence for mode / queue_num / ipv6: an explicitly-passed CLI flag
@@ -478,6 +494,26 @@ mod override_tests {
         assert!(config.general.ipv6);
         config.apply_cli_overrides(&cli(&["--no-ipv6"]));
         assert!(!config.general.ipv6);
+    }
+
+    /// The CLI bounds queue_num to 0..=65534, but a value read from config.toml
+    /// bypasses that parser. validate() must enforce the same bound, since the
+    /// inbound queue uses queue_num + 1 and 65535 would wrap to queue 0.
+    #[test]
+    fn validate_rejects_queue_num_whose_inbound_would_overflow() {
+        let mut config = Config::default();
+
+        config.general.queue_num = 65535;
+        assert!(
+            config.validate().is_err(),
+            "queue_num 65535 overflows the inbound queue and must be rejected",
+        );
+
+        config.general.queue_num = 65534; // inbound = 65535, the highest valid
+        assert!(config.validate().is_ok(), "queue_num 65534 must be accepted");
+
+        config.general.queue_num = 200; // shipped default
+        assert!(config.validate().is_ok());
     }
 
     /// IPv6 can be turned off from config.toml and a flagless run keeps it off.
