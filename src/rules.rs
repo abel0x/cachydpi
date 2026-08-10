@@ -154,6 +154,7 @@ table ip6 {table} {{
     pub fn remove(&mut self) -> Result<()> {
         debug!("removing nftables rules (table={})", NFT_TABLE);
 
+        let mut failed: Vec<String> = Vec::new();
         let mut first_err: Option<anyhow::Error> = None;
         for family in ["ip", "ip6"] {
             let script = format!(
@@ -162,16 +163,25 @@ table ip6 {table} {{
                 table = NFT_TABLE
             );
             // Keep going after a failure so one family cannot block the other.
-            if let Err(e) = self.run_nft(&script)
-                && first_err.is_none()
-            {
-                first_err = Some(e);
+            if let Err(e) = self.run_nft(&script) {
+                failed.push(family.to_string());
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
             }
         }
 
         self.installed = false;
+
+        // Splitting the families means teardown is no longer atomic across
+        // them, so a partial result is possible. Name what is still in place
+        // instead of letting the caller report a clean removal.
         match first_err {
-            Some(e) => Err(e),
+            Some(e) => Err(e.context(format!(
+                "nftables teardown incomplete — table {} still present for: {}",
+                NFT_TABLE,
+                failed.join(", ")
+            ))),
             None => Ok(()),
         }
     }
