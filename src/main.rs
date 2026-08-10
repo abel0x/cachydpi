@@ -153,7 +153,13 @@ fn main() -> Result<()> {
             .context("failed to install nftables rules")?;
     }
 
-    // Open raw socket for packet injection
+    // Open raw socket for packet injection.
+    //
+    // This must stay ahead of the privilege drop below: CAP_NET_RAW is given
+    // up there for the rest of the process lifetime (see RETAINED_CAPS), and
+    // the socket only keeps working because it is already open. Anything that
+    // creates a raw socket later — a reconnect or retry path, say — needs the
+    // capability back, and would fail in production only.
     let raw_socket = RawSocket::new(config.general.ipv6).context("failed to create raw socket")?;
 
     // Open nfqueue for outbound packets
