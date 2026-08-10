@@ -136,20 +136,44 @@ table ip6 {table} {{
         Ok(())
     }
 
-    /// Remove all CachyDPI nftables rules
+    /// Remove all CachyDPI nftables rules.
+    ///
+    /// Both families are cleaned regardless of the `ipv6` setting: an ip6 table
+    /// installed by an earlier `ipv6 = true` run must not survive a later
+    /// `ipv6 = false` teardown, or the machine does not return to its
+    /// pre-start state and the stale rules keep steering IPv6 traffic into a
+    /// queue whose daemon may no longer have an IPv6 raw socket.
+    ///
+    /// Each family is deleted with the `table <family> <name>` /
+    /// `delete table <family> <name>` idiom: a bodyless `table` line creates
+    /// the table when it is missing, so the following `delete` succeeds whether
+    /// or not anything was installed — no spurious error on a clean system.
+    /// The two families run as separate `nft` invocations on purpose, because
+    /// `nft -f` applies a script as one transaction: a kernel without nf_tables
+    /// IPv6 support would otherwise roll back the IPv4 deletion too.
     pub fn remove(&mut self) -> Result<()> {
         debug!("removing nftables rules (table={})", NFT_TABLE);
 
-        // Delete IPv4 table
-        let _ = self.run_nft(&format!("delete table ip {}", NFT_TABLE));
-
-        // Delete IPv6 table
-        if self.ipv6 {
-            let _ = self.run_nft(&format!("delete table ip6 {}", NFT_TABLE));
+        let mut first_err: Option<anyhow::Error> = None;
+        for family in ["ip", "ip6"] {
+            let script = format!(
+                "table {family} {table}\ndelete table {family} {table}\n",
+                family = family,
+                table = NFT_TABLE
+            );
+            // Keep going after a failure so one family cannot block the other.
+            if let Err(e) = self.run_nft(&script)
+                && first_err.is_none()
+            {
+                first_err = Some(e);
+            }
         }
 
         self.installed = false;
-        Ok(())
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Check if rules are currently installed
@@ -203,6 +227,102 @@ impl Drop for NftRules {
                 warn!("failed to remove nftables rules on exit: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table name is a fixed global, so these tests must not run
+    /// concurrently against the same netns.
+    static NFT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn ruleset_dump() -> String {
+        std::process::Command::new("nft")
+            .args(["list", "ruleset"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    }
+
+    /// These tests need nft plus CAP_NET_ADMIN, so a plain `cargo test` skips
+    /// them. To actually exercise them in an isolated network namespace:
+    ///   unshare -Urn cargo test --lib rules::
+    fn nft_writable() -> bool {
+        if check_nft_available().is_err() {
+            eprintln!("skipping: nft not available");
+            return false;
+        }
+        let mut probe = NftRules::new(200, true);
+        if probe.install().is_err() {
+            eprintln!("skipping: cannot install nftables rules (need CAP_NET_ADMIN — try `unshare -Urn`)");
+            return false;
+        }
+        let _ = probe.remove();
+        true
+    }
+
+    /// The regression: an ip6 table installed while ipv6 was enabled must be
+    /// removed by a later teardown that runs with ipv6 disabled.
+    #[test]
+    fn teardown_removes_ip6_table_left_by_an_earlier_ipv6_run() {
+        let _guard = NFT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if !nft_writable() {
+            return;
+        }
+
+        let mut with_v6 = NftRules::new(200, true);
+        with_v6.install().expect("install with ipv6 should succeed");
+        with_v6.set_persistent(); // leave the tables behind deliberately
+        let installed = ruleset_dump();
+        assert!(
+            installed.contains(&format!("table ip6 {NFT_TABLE}")),
+            "ipv6 install should create an ip6 table, got:\n{installed}"
+        );
+
+        // A later run configured without IPv6 still has to clean it up.
+        let mut without_v6 = NftRules::new(200, false);
+        without_v6.remove().expect("teardown must succeed");
+
+        let after = ruleset_dump();
+        assert!(
+            !after.contains(NFT_TABLE),
+            "no cachydpi trace may survive teardown, got:\n{after}"
+        );
+    }
+
+    /// Acceptance criterion end to end: start(ipv6) → stop → start(no ipv6) →
+    /// stop leaves nothing behind, and teardown on an already-clean system
+    /// still succeeds (so start does not log a spurious nft error).
+    #[test]
+    fn start_stop_cycle_with_changing_ipv6_leaves_no_trace() {
+        let _guard = NFT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if !nft_writable() {
+            return;
+        }
+
+        for ipv6 in [true, false] {
+            let mut rules = NftRules::new(200, ipv6);
+            rules.install().expect("install should succeed");
+            assert!(
+                ruleset_dump().contains(NFT_TABLE),
+                "rules should be present while running (ipv6={ipv6})"
+            );
+
+            rules.remove().expect("teardown must succeed");
+            let after = ruleset_dump();
+            assert!(
+                !after.contains(NFT_TABLE),
+                "teardown left a trace (ipv6={ipv6}):\n{after}"
+            );
+        }
+
+        // Idempotent and quiet: nothing installed, teardown still succeeds.
+        let mut again = NftRules::new(200, false);
+        again
+            .remove()
+            .expect("teardown on a clean system must not error");
     }
 }
 
