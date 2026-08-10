@@ -2,9 +2,11 @@
 
 use std::fs;
 use std::io::{self, BufRead, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use tempfile::NamedTempFile;
 
 use crate::config::{Config, DomainMode};
 
@@ -110,6 +112,39 @@ fn print_list_summary(blacklist_file: &str) {
     }
 }
 
+/// Replace `path` with `content` atomically.
+///
+/// A truncating write (`fs::write`) leaves config.toml empty or half-written if
+/// the process is interrupted — a Ctrl+C at the interactive prompt, or a full
+/// disk — and a truncated config silently falls back to the built-in defaults
+/// (which bypass *every* domain, not just the blacklist). Instead the content
+/// goes to a temp file in the *same directory* (rename is only atomic within one
+/// filesystem), is fsynced, and is then renamed over the destination: a reader
+/// and an interrupted write both see either the old file or the new one.
+fn write_atomically(path: &Path, content: &str) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = NamedTempFile::new_in(dir)
+        .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
+
+    tmp.write_all(content.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to flush {} to disk", path.display()))?;
+
+    // NamedTempFile is created 0600. Carry over the destination's mode (or 0644
+    // for a new file) before the rename, otherwise the daemon's unprivileged
+    // user loses read access to its own config.
+    let perms = fs::metadata(path)
+        .map(|m| m.permissions())
+        .unwrap_or_else(|_| fs::Permissions::from_mode(0o644));
+    let _ = fs::set_permissions(tmp.path(), perms);
+
+    tmp.persist(path)
+        .map_err(|e| anyhow::anyhow!("failed to replace {}: {}", path.display(), e))?;
+    Ok(())
+}
+
 /// Rewrite only the `mode = "..."` line inside the `[domains]` section.
 /// All comments and other settings are preserved exactly.
 fn update_mode_in_file(path: &Path, mode: &str, blacklist_file: &str) -> Result<()> {
@@ -118,8 +153,7 @@ fn update_mode_in_file(path: &Path, mode: &str, blacklist_file: &str) -> Result<
             "[domains]\nmode = \"{}\"\nblacklist_file = \"{}\"\n",
             mode, blacklist_file
         );
-        return fs::write(path, content)
-            .with_context(|| format!("failed to write {}", path.display()));
+        return write_atomically(path, &content);
     }
 
     let content =
@@ -155,7 +189,7 @@ fn update_mode_in_file(path: &Path, mode: &str, blacklist_file: &str) -> Result<
         );
     }
 
-    fs::write(path, out).with_context(|| format!("failed to write {}", path.display()))
+    write_atomically(path, &out)
 }
 
 fn offer_restart() -> Result<()> {
@@ -309,5 +343,84 @@ mod tests {
         assert!(result.is_err(), "missing [domains].mode must be an error");
         // File untouched on failure.
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// The update must land via rename(2), not by truncating the destination in
+    /// place. A rename swaps in a different inode; an O_TRUNC write keeps the
+    /// same one. This is the mechanism that makes the update atomic.
+    #[test]
+    fn update_mode_replaces_via_rename_not_truncate() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[domains]\nmode = \"none\"\n").unwrap();
+        let ino_before = fs::metadata(&path).unwrap().ino();
+
+        update_mode_in_file(&path, "blacklist", "/etc/cachydpi/blacklist.txt").unwrap();
+
+        let ino_after = fs::metadata(&path).unwrap().ino();
+        assert_ne!(
+            ino_before, ino_after,
+            "config must be replaced by rename (new inode), not truncated in place",
+        );
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("mode = \"blacklist\"")
+        );
+    }
+
+    /// Acceptance criterion: config.toml is only ever observable as the old or
+    /// the new complete file — never truncated or half-written. A reader thread
+    /// samples the file while it is rewritten repeatedly; with a truncating
+    /// write it catches short/empty states, with rename it cannot.
+    #[test]
+    fn concurrent_reader_never_observes_partial_config() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Pad the file so a truncating write leaves a wide, easily-sampled
+        // window in which the content is incomplete.
+        let padding = format!("# {}\n", "x".repeat(200_000));
+        let write_config = |mode: &str| format!("{padding}[domains]\nmode = \"{mode}\"\n");
+        let min_len = padding.len();
+        fs::write(&path, write_config("none")).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_path = path.clone();
+        let reader_stop = Arc::clone(&stop);
+        let reader = std::thread::spawn(move || {
+            let mut bad: Vec<String> = Vec::new();
+            while !reader_stop.load(Ordering::Relaxed) {
+                match fs::read_to_string(&reader_path) {
+                    // A complete config always carries the padding, the section
+                    // header, and a trailing newline.
+                    Ok(c) => {
+                        if c.len() < min_len || !c.contains("[domains]") || !c.ends_with('\n') {
+                            bad.push(format!("partial read of {} bytes", c.len()));
+                        }
+                    }
+                    Err(e) => bad.push(format!("config unreadable mid-update: {e}")),
+                }
+            }
+            bad
+        });
+
+        for i in 0..40 {
+            let mode = if i % 2 == 0 { "blacklist" } else { "none" };
+            update_mode_in_file(&path, mode, "/etc/cachydpi/blacklist.txt").unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+
+        let bad = reader.join().unwrap();
+        assert!(
+            bad.is_empty(),
+            "reader observed {} non-atomic state(s): {:?}",
+            bad.len(),
+            &bad[..bad.len().min(3)],
+        );
     }
 }

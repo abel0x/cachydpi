@@ -38,6 +38,8 @@ serde_json = "1"
 anyhow = "1"
 thiserror = "2"
 signal-hook = "0.3"
+# Atomic config rewrites (temp file + rename) in `cachydpi settings`
+tempfile = "3"
 
 # Monitor TUI (optional, enabled by default)
 ratatui = { version = "0.30", optional = true }
@@ -58,9 +60,6 @@ required-features = ["monitor"]
 
 [build-dependencies]
 pkg-config = "0.3"
-
-[dev-dependencies]
-tempfile = "3"
 
 [profile.release]
 opt-level = 3
