@@ -33,7 +33,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev libmnl-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev libmnl-dev pkg-config nftables libcap2-bin uidmap
 
       - name: Build
         run: cargo build --all-features
@@ -43,6 +43,16 @@ jobs:
 
       - name: Unit & comprehensive tests
         run: cargo test --all-features
+
+      # The nftables, raw-socket and privilege-drop tests need a privileged
+      # network namespace. They skip when it is unavailable, which would make
+      # this job pass without ever running them, so here the namespace is
+      # provided and CACHYDPI_REQUIRE_NETNS_TESTS turns any remaining skip
+      # into a failure.
+      - name: Namespace-dependent tests (nftables, raw socket, privilege drop)
+        env:
+          CACHYDPI_REQUIRE_NETNS_TESTS: "1"
+        run: unshare -Urn --map-auto --map-root-user cargo test --all-features -- --test-threads=1
 
   audit:
     name: Security Audit

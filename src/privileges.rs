@@ -267,17 +267,19 @@ mod tests {
     ///   unshare -Urn --map-auto --map-root-user cargo test --lib privileges::
     fn setuid_path_available() -> Option<nix::unistd::User> {
         if !nix::unistd::getuid().is_root() {
-            eprintln!("skipping: not root (try `unshare -Urn --map-auto --map-root-user`)");
+            crate::testing::skip_unless_required(
+                "not root (try `unshare -Urn --map-auto --map-root-user`)",
+            );
             return None;
         }
         if no_new_privs() {
-            eprintln!("skipping: NoNewPrivileges is set, the setuid path cannot run");
+            crate::testing::skip_unless_required("NoNewPrivileges is set, the setuid path cannot run");
             return None;
         }
         match nix::unistd::User::from_name("cachydpi") {
             Ok(Some(user)) => Some(user),
             _ => {
-                eprintln!("skipping: no cachydpi user on this system");
+                crate::testing::skip_unless_required("no cachydpi user on this system");
                 None
             }
         }
@@ -294,12 +296,12 @@ mod tests {
             Ok(ForkResult::Parent { child }) => match nix::sys::wait::waitpid(child, None) {
                 Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => Some(code),
                 other => {
-                    eprintln!("child did not exit normally: {other:?}");
+                    crate::testing::skip_unless_required(&format!("child did not exit normally: {other:?}"));
                     None
                 }
             },
             Err(e) => {
-                eprintln!("skipping: fork failed ({e})");
+                crate::testing::skip_unless_required(&format!("fork failed ({e})"));
                 None
             }
         }
@@ -372,7 +374,7 @@ mod tests {
             return;
         }
         if crate::rules::check_nft_available().is_err() {
-            eprintln!("skipping: nft not available");
+            crate::testing::skip_unless_required("nft not available");
             return;
         }
         const OK: i32 = 0;

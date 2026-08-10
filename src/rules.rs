@@ -267,12 +267,14 @@ mod tests {
     ///   unshare -Urn cargo test --lib rules::
     fn nft_writable() -> bool {
         if check_nft_available().is_err() {
-            eprintln!("skipping: nft not available");
+            crate::testing::skip_unless_required("nft not available");
             return false;
         }
         let mut probe = NftRules::new(200, true);
         if probe.install().is_err() {
-            eprintln!("skipping: cannot install nftables rules (need CAP_NET_ADMIN — try `unshare -Urn`)");
+            crate::testing::skip_unless_required(
+                "cannot install nftables rules (needs CAP_NET_ADMIN - try `unshare -Urn`)",
+            );
             return false;
         }
         let _ = probe.remove();

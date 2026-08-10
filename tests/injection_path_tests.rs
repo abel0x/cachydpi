@@ -313,7 +313,7 @@ fn raw_socket_without_ipv6_refuses_to_claim_an_ipv6_send() {
     let socket = match cachydpi::rawsocket::RawSocket::new(false) {
         Ok(s) => s,
         Err(_) => {
-            eprintln!("skipping: no CAP_NET_RAW (try `unshare -Urn`)");
+            cachydpi::testing::skip_unless_required("no CAP_NET_RAW (try `unshare -Urn`)");
             return;
         }
     };
