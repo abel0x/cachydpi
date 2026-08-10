@@ -224,12 +224,19 @@ fn build_quic_initial_packet() -> Vec<u8> {
     packet
 }
 
+/// Base config for the strategy tests, with the domain filter switched off.
+///
+/// These tests exercise strategy behaviour rather than domain filtering, and
+/// the default mode is now the restrictive one — leaving it in place would
+/// filter every packet out before the strategy under test runs.
 fn default_config() -> Config {
-    Config::default()
+    let mut c = Config::default();
+    c.domains.mode = DomainMode::None;
+    c
 }
 
 fn config_with_fake_packets() -> Config {
-    let mut c = Config::default();
+    let mut c = default_config();
     c.strategies.fake_packet_enabled = true;
     c.strategies.fake_packet_ttl = 3;
     c.strategies.auto_ttl = false;
@@ -237,7 +244,7 @@ fn config_with_fake_packets() -> Config {
 }
 
 fn config_with_window(size: u16) -> Config {
-    let mut c = Config::default();
+    let mut c = default_config();
     c.strategies.tcp_window_size = size;
     c
 }
@@ -1298,13 +1305,16 @@ queue_num = 150
     }
 
     #[test]
-    fn empty_config_uses_all_defaults() {
+    fn empty_config_is_rejected_rather_than_defaulted() {
+        // An empty file is valid TOML and used to deserialize into the full set
+        // of defaults, silently replacing the operator's domain filter after a
+        // truncated write. It is now an explicit error; starting from defaults
+        // requires the file to be absent, not empty.
         let f = write_temp_config("");
-        let config = Config::load(f.path()).unwrap();
-        assert_eq!(config.general.queue_num, 200);
-        assert_eq!(config.general.mode, 5);
-        assert!(config.general.ipv6);
-        assert!(config.strategies.passive_dpi);
+        assert!(
+            Config::load(f.path()).is_err(),
+            "an empty config must not be accepted as all-defaults"
+        );
     }
 
     #[test]

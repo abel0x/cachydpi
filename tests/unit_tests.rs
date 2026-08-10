@@ -338,7 +338,9 @@ fn whitelist_built_from_inline_list_via_load() {
 
 #[test]
 fn domain_filter_none_passes_all() {
-    let config = Config::default();
+    let mut config = Config::default();
+    // None is no longer the default; request it explicitly.
+    config.domains.mode = DomainMode::None;
     assert!(config.should_process_domain("anything.com"));
     assert!(config.should_process_domain(""));
 }
@@ -419,10 +421,18 @@ fn default_config_desync_options() {
     );
 }
 
+/// The built-in default must be the restrictive mode. `DomainMode::None`
+/// bypasses every site, so it may only be reached by an explicit
+/// `mode = "none"`, never by defaulting or by a failed config load.
 #[test]
-fn default_config_domain_mode_is_none() {
+fn default_config_domain_mode_is_restrictive() {
     let config = Config::default();
-    assert_eq!(config.domains.mode, DomainMode::None);
+    assert_eq!(config.domains.mode, DomainMode::Blacklist);
+    assert_ne!(
+        config.domains.mode,
+        DomainMode::None,
+        "the default must never bypass every domain"
+    );
 }
 
 // ── Fake ClientHello Tests ──

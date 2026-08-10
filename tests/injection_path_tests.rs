@@ -167,8 +167,13 @@ fn build_plain_ack_packet() -> Vec<u8> {
 
 /// Engine with default config (multi-fragment+disorder on, domain filter off).
 /// `with_fakes` enables fake packet injection → InjectAndFragment path.
+///
+/// The domain filter is switched off explicitly: these tests are about the
+/// injection path, and the default mode is now the restrictive one, which would
+/// filter every packet out before the path under test is reached.
 fn make_engine(with_fakes: bool) -> StrategyEngine {
     let mut config = Config::default();
+    config.domains.mode = cachydpi::config::DomainMode::None;
     config.strategies.fake_packet_enabled = with_fakes;
     StrategyEngine::new(BypassMode::AllActive, config)
 }

@@ -1161,7 +1161,10 @@ mod config_edge_cases {
 
     #[test]
     fn should_process_domain_mode_none() {
-        let config = Config::default();
+        let mut config = Config::default();
+        // None is no longer the default (it bypasses every site), so ask for it
+        // explicitly — this test is about what None means, not what defaults to.
+        config.domains.mode = DomainMode::None;
         // Mode::None → always process
         assert!(config.should_process_domain("anything.com"));
         assert!(config.should_process_domain(""));

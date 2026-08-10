@@ -35,11 +35,13 @@ fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse();
 
-    // Load config and apply CLI overrides
-    let mut config = Config::load(&cli.config).unwrap_or_else(|e| {
-        eprintln!("warning: config load failed ({}), using defaults", e);
-        Config::default()
-    });
+    // Load config and apply CLI overrides.
+    //
+    // A config that exists but cannot be read or parsed is fatal: substituting
+    // the built-in defaults would silently swap the operator's domain filter
+    // for a different one, so refuse to start instead. Config::load only falls
+    // back to defaults when the file is genuinely absent.
+    let mut config = Config::load(&cli.config)?;
     config.apply_cli_overrides(&cli);
 
     // Reject invalid values that the config-file path can smuggle past clap

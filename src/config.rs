@@ -5,9 +5,10 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -79,11 +80,16 @@ pub struct StrategyConfig {
 }
 
 /// Domain filtering mode
+///
+/// The default is deliberately `Blacklist`, the most restrictive mode: with no
+/// list loaded it bypasses nothing. `None` bypasses *every* site, so it must
+/// only ever be reached by an explicit `mode = "none"` in the config — never by
+/// falling back. Do not make `None` the default again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DomainMode {
-    #[default]
     None,
+    #[default]
     Blacklist,
     Whitelist,
 }
@@ -160,7 +166,8 @@ impl Default for StrategyConfig {
 impl Default for DomainConfig {
     fn default() -> Self {
         DomainConfig {
-            mode: DomainMode::None,
+            // Restrictive by default — see DomainMode.
+            mode: DomainMode::Blacklist,
             blacklist_file: None,
             whitelist_file: None,
             blacklist: Vec::new(),
@@ -182,17 +189,44 @@ impl Default for LogConfig {
 impl Config {
     /// Load configuration from a TOML file.
     /// Falls back to defaults if file doesn't exist.
+    /// Load configuration from a TOML file.
+    ///
+    /// Exactly one failure mode is tolerated: the file being absent, which is a
+    /// normal first install and yields the (restrictive) built-in defaults.
+    /// Every other outcome is an error, because substituting defaults for a
+    /// config that exists but could not be honoured silently changes the domain
+    /// filter — and the defaults must never be reached by accident.
+    ///
+    /// `fs::read_to_string` is used to probe for the file instead of
+    /// `Path::exists()`, which also answers "false" when the file is there but
+    /// the directory is not searchable — that would turn a permission problem
+    /// into a silent fallback.
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            info!(
-                "config file not found at {}, using defaults",
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                info!(
+                    "config file not found at {}, using defaults",
+                    path.display()
+                );
+                return Ok(Config::default());
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("failed to read config file: {}", path.display()));
+            }
+        };
+
+        // An empty file is valid TOML and would deserialize into the full set of
+        // defaults without a single warning, so a truncated config would quietly
+        // replace the operator's domain filter. Treat it as the corruption it is.
+        if content.trim().is_empty() {
+            bail!(
+                "config file {} is empty — refusing to fall back to built-in defaults; \
+                 restore it or delete it to start from defaults deliberately",
                 path.display()
             );
-            return Ok(Config::default());
         }
-
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read config file: {}", path.display()))?;
 
         let config: Config = toml::from_str(&content)
             .with_context(|| format!("failed to parse config file: {}", path.display()))?;
@@ -432,6 +466,138 @@ impl Config {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Case 1 of 4: the file is genuinely absent (first install). This is the
+    /// only tolerated failure, and the defaults it yields must be restrictive.
+    #[test]
+    fn missing_config_falls_back_to_restrictive_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.toml");
+
+        let config = Config::load(&path).expect("a missing config is not an error");
+        assert_eq!(
+            config.domains.mode,
+            DomainMode::Blacklist,
+            "fallback defaults must not bypass every site"
+        );
+    }
+
+    /// Case 2 of 4: the file exists but cannot be read. Must be fatal — an
+    /// unreadable config used to be indistinguishable from a missing one.
+    #[test]
+    fn unreadable_config_is_a_hard_error() {
+        if nix::unistd::geteuid().is_root() {
+            eprintln!("skipping: root bypasses file permission checks");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[domains]\nmode = \"blacklist\"\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        assert!(
+            Config::load(&path).is_err(),
+            "an unreadable config must not silently become the defaults"
+        );
+    }
+
+    /// Case 3 of 4: the file exists but is not valid TOML. Must be fatal.
+    #[test]
+    fn malformed_config_is_a_hard_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[domains]\nmode = \"blackl").unwrap();
+
+        assert!(
+            Config::load(&path).is_err(),
+            "a malformed config must not silently become the defaults"
+        );
+    }
+
+    /// Case 4 of 4: a truncated (0-byte) file. Empty input is valid TOML and
+    /// deserializes into the complete set of defaults without any warning, so
+    /// it has to be rejected explicitly.
+    #[test]
+    fn empty_config_is_a_hard_error() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, body) in [("empty", ""), ("whitespace", "\n  \n\t\n")] {
+            let path = dir.path().join(format!("{name}.toml"));
+            fs::write(&path, body).unwrap();
+            assert!(
+                Config::load(&path).is_err(),
+                "a {name} config must be rejected, not treated as all-defaults"
+            );
+        }
+    }
+
+    /// The property behind all four cases: no way of loading a config can end
+    /// in DomainMode::None (bypass every site) unless the file actually asks
+    /// for it. Every input either fails outright or yields a restrictive mode.
+    #[test]
+    fn no_config_failure_mode_can_reach_god_mode() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut cases: Vec<(&str, std::path::PathBuf)> = Vec::new();
+
+        let missing = dir.path().join("missing.toml");
+        cases.push(("missing file", missing));
+
+        for (name, body) in [
+            ("empty file", ""),
+            ("whitespace only", "   \n\t\n"),
+            ("truncated mid-value", "[domains]\nmode = \"blackl"),
+            ("truncated mid-section", "[gene"),
+            ("only an unrelated section", "[general]\nmode = 5\n"),
+            ("nul bytes", "\0\0\0\0"),
+            ("html error page", "<!DOCTYPE html><h1>404</h1>"),
+            ("domains section without mode", "[domains]\nblacklist = []\n"),
+        ] {
+            let path = dir.path().join(format!("{}.toml", name.replace(' ', "-")));
+            fs::write(&path, body).unwrap();
+            cases.push((name, path));
+        }
+
+        // A file that exists but cannot be read (skipped as root).
+        if !nix::unistd::geteuid().is_root() {
+            let path = dir.path().join("unreadable.toml");
+            let mut f = fs::File::create(&path).unwrap();
+            f.write_all(b"[domains]\nmode = \"blacklist\"\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            cases.push(("unreadable file", path));
+        }
+
+        for (name, path) in cases {
+            match Config::load(&path) {
+                // Hard failure is always an acceptable outcome.
+                Err(_) => {}
+                // Succeeding is only acceptable with a restrictive filter.
+                Ok(config) => assert_ne!(
+                    config.domains.mode,
+                    DomainMode::None,
+                    "loading a config with {name} silently produced god mode"
+                ),
+            }
+        }
+    }
+
+    /// The escape hatch still works: god mode remains reachable, but only when
+    /// the config explicitly asks for it.
+    #[test]
+    fn explicit_none_mode_is_still_honoured() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[domains]\nmode = \"none\"\n").unwrap();
+
+        let config = Config::load(&path).expect("an explicit config must load");
+        assert_eq!(config.domains.mode, DomainMode::None);
     }
 }
 

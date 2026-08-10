@@ -142,6 +142,30 @@ fn write_atomically(path: &Path, content: &str) -> Result<()> {
 
     tmp.persist(path)
         .map_err(|e| anyhow::anyhow!("failed to replace {}: {}", path.display(), e))?;
+
+    // fsync the directory too: the rename is atomic against concurrent readers
+    // either way, but without this the directory entry itself may not survive a
+    // power cut. ext4 usually rescues this case through its rename heuristic;
+    // that is filesystem-specific, not a guarantee. A failure here means the
+    // update already applied but its durability is unconfirmed, so warn rather
+    // than report the whole write as failed.
+    // (this runs before logging is initialised, so report on stderr)
+    match fs::File::open(dir) {
+        Ok(dir_file) => {
+            if let Err(e) = dir_file.sync_all() {
+                eprintln!(
+                    "  warning: {} written but its directory could not be synced: {e}",
+                    path.display()
+                );
+            }
+        }
+        Err(e) => eprintln!(
+            "  warning: {} written but {} could not be opened to sync: {e}",
+            path.display(),
+            dir.display()
+        ),
+    }
+
     Ok(())
 }
 
