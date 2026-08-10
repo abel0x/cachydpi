@@ -145,6 +145,21 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Settle IPv6 before anything is installed. A machine with no IPv6 should
+    // run as an IPv4-only bypass rather than refuse to start, but the decision
+    // has to happen here: installing ip6 rules and only then discovering there
+    // is no IPv6 injection socket would queue traffic the daemon can do nothing
+    // with. Failing to open the socket on a machine that *does* have IPv6 stays
+    // fatal, in RawSocket::new.
+    if config.general.ipv6 && !cachydpi::rawsocket::ipv6_available() {
+        warn!(
+            "IPv6 is unavailable on this system (no AF_INET6, or disabled via \
+             net.ipv6.conf.all.disable_ipv6) — continuing IPv4-only: no ip6 rules \
+             and no IPv6 injection"
+        );
+        config.general.ipv6 = false;
+    }
+
     // Install nftables rules
     let mut nft_rules = NftRules::new(config.general.queue_num, config.general.ipv6);
     if config.general.manage_rules {

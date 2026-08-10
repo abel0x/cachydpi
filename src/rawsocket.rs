@@ -80,6 +80,39 @@ impl Sent {
     }
 }
 
+/// Sysctl that administratively disables IPv6 while leaving AF_INET6 usable.
+const IPV6_DISABLE_SYSCTL: &str = "/proc/sys/net/ipv6/conf/all/disable_ipv6";
+
+/// Whether IPv6 is switched off system-wide via sysctl.
+///
+/// Split out from [`ipv6_available`] so the parsing can be tested: the sysctl
+/// is not writable from a user namespace, so the real file cannot be flipped in
+/// a test.
+fn ipv6_disabled_by_sysctl(path: &std::path::Path) -> bool {
+    matches!(std::fs::read_to_string(path), Ok(value) if value.trim() == "1")
+}
+
+/// Whether this system can carry IPv6 at all.
+///
+/// This separates two failures that deserve different answers. A machine with
+/// no IPv6 — kernel built without it, or administratively disabled — should
+/// keep working as an IPv4-only bypass rather than refusing to start. A machine
+/// that *has* IPv6 but where the injection socket cannot be opened is a genuine
+/// startup failure, because ip6 rules would then queue traffic the daemon has
+/// to abandon.
+///
+/// Note that the socket probe alone is not enough: with
+/// `net.ipv6.conf.all.disable_ipv6=1` an AF_INET6 socket still opens happily,
+/// so the sysctl has to be consulted too.
+pub fn ipv6_available() -> bool {
+    // A kernel built without IPv6 has no AF_INET6. Probe with UDP, which needs
+    // no privileges, unlike the raw socket used for injection.
+    if Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).is_err() {
+        return false;
+    }
+    !ipv6_disabled_by_sysctl(std::path::Path::new(IPV6_DISABLE_SYSCTL))
+}
+
 /// A raw socket for sending crafted IP packets
 pub struct RawSocket {
     /// IPv4 raw socket
@@ -342,6 +375,47 @@ impl RawSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sysctl decides between "IPv6 exists" and "IPv6 is switched off",
+    /// which is the difference between starting IPv4-only and refusing to
+    /// start. It cannot be flipped from a user namespace, so the parsing is
+    /// tested against files instead.
+    #[test]
+    fn ipv6_sysctl_is_read_as_a_disable_switch() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let disabled = dir.path().join("disabled");
+        std::fs::write(&disabled, "1\n").unwrap();
+        assert!(
+            ipv6_disabled_by_sysctl(&disabled),
+            "disable_ipv6=1 means IPv6 is off"
+        );
+
+        let enabled = dir.path().join("enabled");
+        std::fs::write(&enabled, "0\n").unwrap();
+        assert!(!ipv6_disabled_by_sysctl(&enabled));
+
+        // No sysctl at all (kernel without IPv6 support) must not read as
+        // "disabled" here — that case is caught by the socket probe, and
+        // treating a missing file as disabled would switch IPv6 off on any
+        // system with an unusual /proc layout.
+        assert!(!ipv6_disabled_by_sysctl(&dir.path().join("absent")));
+    }
+
+    /// The IPv4-only path has to keep working, since that is where a machine
+    /// without IPv6 now lands instead of failing to start.
+    #[test]
+    fn ipv4_only_raw_socket_builds_without_ipv6() {
+        match RawSocket::new(false) {
+            Ok(socket) => assert!(
+                socket.socket_v6.is_none(),
+                "ipv6=false must not create an IPv6 socket"
+            ),
+            Err(_) => crate::testing::skip_unless_required(
+                "no CAP_NET_RAW (try `unshare -Urn`)",
+            ),
+        }
+    }
 
     #[test]
     fn rate_limiter_allows_up_to_capacity_then_blocks() {
