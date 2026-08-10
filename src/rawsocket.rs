@@ -66,6 +66,10 @@ impl RateLimiter {
 /// This is a witness by convention, not a linear type — Rust cannot prove the
 /// syscall happened. It converts a silent mistake into a visible, greppable
 /// assertion, which is as far as the type system takes us here.
+///
+/// Deliberately neither `Copy` nor `Clone`: consumers take it by value, so one
+/// witness authorises exactly one drop. Deriving either would let a single
+/// proof of delivery be reused for packets that were never replaced.
 #[must_use = "a Sent witness exists to justify dropping the original packet"]
 pub struct Sent(());
 

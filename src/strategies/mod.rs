@@ -19,7 +19,7 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tracing::{debug, info, trace, warn};
 
 use crate::config::Config;
@@ -753,9 +753,25 @@ impl PacketInjector for RawSocket {
 /// an error: there is nothing replacing the original, so it must not be dropped.
 fn send_fragments<I: PacketInjector>(injector: &I, fragments: &[Vec<u8>]) -> Result<Sent> {
     let mut delivered: Option<Sent> = None;
+    let mut count = 0usize;
     for frag in fragments {
         delivered = Some(injector.send_data(frag)?);
+        count += 1;
     }
+
+    // The returned witness has to stand for *every* replacement, not merely
+    // for the last successful send. The `?` above already aborts on the first
+    // failure, so a partial run cannot get here today; this check keeps that
+    // meaning if the loop is ever made tolerant of individual failures, which
+    // would otherwise hand back a witness for a partial delivery.
+    if count != fragments.len() {
+        bail!(
+            "only {count} of {} replacement fragments were delivered; \
+             the original packet must not be dropped",
+            fragments.len()
+        );
+    }
+
     delivered.context("no fragments to send in place of the original packet")
 }
 

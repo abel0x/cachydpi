@@ -67,6 +67,11 @@ struct MockInjector {
     /// socket, EPERM from nftables, ENOBUFS, ...). Per the PacketInjector
     /// contract such failures must be visible, so the mock returns Err.
     fail_data: bool,
+    /// Deliver this many fragments, then fail — a partial delivery, where
+    /// some replacements are on the wire and the rest never make it.
+    fail_data_after: Option<usize>,
+    /// Counts successful data sends, for `fail_data_after`.
+    data_sends: std::sync::atomic::AtomicUsize,
     /// Simulate failure for decoy sends.
     fail_decoy: bool,
 }
@@ -75,6 +80,14 @@ impl PacketInjector for MockInjector {
     fn send_data(&self, packet: &[u8]) -> Result<cachydpi::rawsocket::Sent> {
         if self.fail_data {
             bail!("simulated data injection failure");
+        }
+        if let Some(limit) = self.fail_data_after {
+            let sent = self
+                .data_sends
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if sent >= limit {
+                bail!("simulated failure after {limit} fragment(s)");
+            }
         }
         self.log.lock().unwrap().push(Event::DataSent(packet.len()));
         // The mock really did deliver the packet to its destination (the log),
@@ -99,8 +112,17 @@ fn harness(fail_data: bool, fail_decoy: bool) -> (Log, MockQueue, MockInjector) 
     let injector = MockInjector {
         log: log.clone(),
         fail_data,
+        fail_data_after: None,
+        data_sends: std::sync::atomic::AtomicUsize::new(0),
         fail_decoy,
     };
+    (log, queue, injector)
+}
+
+/// Harness whose injector delivers `n` fragments and then fails.
+fn harness_partial_delivery(n: usize) -> (Log, MockQueue, MockInjector) {
+    let (log, queue, mut injector) = harness(false, false);
+    injector.fail_data_after = Some(n);
     (log, queue, injector)
 }
 
@@ -301,6 +323,42 @@ fn decoy_failure_does_not_break_the_bypass() {
     assert!(
         ev.contains(&Event::Drop(PACKET_ID)),
         "bypass must complete (original dropped) despite decoy failure; events: {ev:?}"
+    );
+}
+
+/// A partial delivery must not authorise the drop either. The witness returned
+/// by send_fragments stands for every replacement, not just the last successful
+/// send: if fragment 1 goes out and fragment 2 fails, the original is still the
+/// only copy of that data and has to be accepted.
+#[test]
+fn partial_fragment_delivery_does_not_authorise_dropping_the_original() {
+    // The ClientHello splits into 3 fragments; deliver one, then fail.
+    let (log, queue, injector) = harness_partial_delivery(1);
+    let engine = make_engine(false);
+    let pkt = build_tls_client_hello_packet("www.blockedsite.com");
+
+    let result = process_packet(
+        &engine,
+        &queue,
+        &injector,
+        PACKET_ID,
+        &pkt,
+        Direction::Outbound,
+    );
+
+    let ev = events(&log);
+    assert!(result.is_ok(), "the fallback must not surface as an error");
+    assert!(
+        ev.iter().any(|e| matches!(e, Event::DataSent(_))),
+        "the test must actually reach a partial delivery; events: {ev:?}"
+    );
+    assert!(
+        !ev.contains(&Event::Drop(PACKET_ID)),
+        "a partially delivered replacement must not authorise the drop; events: {ev:?}"
+    );
+    assert!(
+        ev.contains(&Event::Accept(PACKET_ID)),
+        "the original must be accepted so the connection survives; events: {ev:?}"
     );
 }
 
