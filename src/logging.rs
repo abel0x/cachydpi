@@ -25,13 +25,31 @@ pub fn init(config: &LogConfig, verbose: u8) -> Result<()> {
     if config.journald {
         match tracing_journald::layer() {
             Ok(journald_layer) => {
-                let fmt_layer = tracing_subscriber::fmt::layer().with_target(true).compact();
+                // Adding a stderr layer as well duplicates every message when
+                // stderr is itself the journal, which is how the systemd unit
+                // runs: one structured entry with fields, and one flat copy of
+                // the same text carrying none of them. The two are buffered
+                // independently, so they can even land out of order, and a
+                // multi-line message is split differently in each.
+                //
+                // systemd sets JOURNAL_STREAM when it has connected stdout or
+                // stderr to the journal, so it is the signal for "the journald
+                // layer already covers this". Without it — a foreground run
+                // from a terminal — the stderr layer is what the operator
+                // actually reads, so it stays.
+                let stream_is_the_journal = std::env::var_os("JOURNAL_STREAM").is_some();
 
-                tracing_subscriber::registry()
+                let registry = tracing_subscriber::registry()
                     .with(env_filter)
-                    .with(journald_layer)
-                    .with(fmt_layer)
-                    .init();
+                    .with(journald_layer);
+
+                if stream_is_the_journal {
+                    registry.init();
+                } else {
+                    registry
+                        .with(tracing_subscriber::fmt::layer().with_target(true).compact())
+                        .init();
+                }
                 return Ok(());
             }
             Err(e) => {
