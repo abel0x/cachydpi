@@ -68,6 +68,52 @@ fn no_second_copy_when_the_stream_is_already_the_journal() {
     );
 }
 
+/// The deprecation notice has to travel through tracing like everything else.
+/// Written straight to the process's output it had no level, no target and no
+/// timestamp: nothing could filter it, and anything collecting structured logs
+/// would drop it entirely.
+#[test]
+fn the_deprecation_notice_is_a_structured_event() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let binary = repo.join("target/debug/cachydpi");
+    if !binary.exists() {
+        eprintln!("skipping: target/debug/cachydpi not built");
+        return;
+    }
+
+    let config = repo.join("target/logging-test-deprecated.toml");
+    std::fs::write(
+        &config,
+        "[general]\nmode = 5\n\n[domains]\nmode = \"whitelist\"\nwhitelist = [\"safe.com\"]\n",
+    )
+    .unwrap();
+
+    let out = Command::new(&binary)
+        .arg("--config")
+        .arg(&config)
+        .arg("--dry-run")
+        .env_remove("JOURNAL_STREAM")
+        .output()
+        .expect("failed to run cachydpi");
+    let output = String::from_utf8_lossy(&out.stdout);
+
+    let notice = output
+        .lines()
+        .find(|l| l.contains("whitelist"))
+        .unwrap_or_else(|| panic!("no deprecation notice in output:\n{output}"));
+
+    // The markers a bare print cannot produce.
+    assert!(notice.contains("WARN"), "notice must carry a level: {notice}");
+    assert!(
+        notice.contains("cachydpi::config"),
+        "notice must carry its target: {notice}"
+    );
+    assert!(
+        notice.contains("removed in 1.2.0"),
+        "notice must still name the removal release: {notice}"
+    );
+}
+
 /// Run by hand from a terminal there is no journald stream, and the fmt layer
 /// is the only thing the operator can read — it must stay.
 #[test]

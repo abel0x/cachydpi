@@ -38,6 +38,15 @@ pub struct Config {
     /// Compiled domain set for O(1) lookup (not serialized)
     #[serde(skip)]
     pub domain_set: HashSet<String>,
+    /// Set when the file still used the pre-rename `whitelist` spelling.
+    ///
+    /// Recorded rather than reported here: loading the config necessarily
+    /// happens before logging exists — the log level comes out of this very
+    /// file — so the notice is emitted by the caller once tracing is up, and
+    /// reaches the journal with a level, a target and a timestamp like every
+    /// other message.
+    #[serde(skip)]
+    pub uses_deprecated_domain_spelling: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,19 +256,24 @@ fn config_uses_deprecated_whitelist_spelling(content: &str) -> bool {
 /// describe the opposite of what the mode does, so say it out loud rather than
 /// letting the misleading name live on silently. Detected from the raw text
 /// because serde aliases do not report which spelling was matched.
-fn warn_on_deprecated_whitelist_spelling(content: &str, path: &Path) {
-    if config_uses_deprecated_whitelist_spelling(content) {
-        // Config loading necessarily precedes logging setup — the log level
-        // comes out of this very file — so a tracing macro here would go
-        // nowhere. stderr reaches the journal under the systemd unit and the
-        // terminal in the foreground.
-        eprintln!(
-            "warning: {}: \"whitelist\" is deprecated and will be REMOVED IN {} — \
-             rename it to \"exempt\" (mode = \"exempt\", exempt_file, exempt). It never \
-             meant \"bypass only these\"; the listed domains are the ones left alone",
-            path.display(),
-            DEPRECATED_WHITELIST_REMOVED_IN
-        );
+impl Config {
+    /// Emit any notices recorded during loading.
+    ///
+    /// Call once logging is initialised. Reporting straight from `load` meant
+    /// writing to stderr, which produced a line with no level, no target and no
+    /// timestamp — invisible to any filter and dropped by anything collecting
+    /// structured logs.
+    pub fn log_deferred_notices(&self, path: &Path) {
+        if self.uses_deprecated_domain_spelling {
+            warn!(
+                config = %path.display(),
+                removed_in = DEPRECATED_WHITELIST_REMOVED_IN,
+                "\"whitelist\" is deprecated and will be removed in {} — rename it to \
+                 \"exempt\" (mode = \"exempt\", exempt_file, exempt). It never meant \
+                 \"bypass only these\"; the listed domains are the ones left alone",
+                DEPRECATED_WHITELIST_REMOVED_IN
+            );
+        }
     }
 }
 
@@ -324,7 +338,7 @@ impl Config {
             );
         }
 
-        let config: Config = toml::from_str(&content).with_context(|| {
+        let mut config: Config = toml::from_str(&content).with_context(|| {
             format!(
                 "config file {} is not valid — the daemon will not start with settings it \
                  cannot honour; fix the reported field, or move the file aside to fall \
@@ -335,7 +349,8 @@ impl Config {
             )
         })?;
 
-        warn_on_deprecated_whitelist_spelling(&content, path);
+        // Recorded now, reported by log_deferred_notices() once logging exists.
+        config.uses_deprecated_domain_spelling = config_uses_deprecated_whitelist_spelling(&content);
 
         debug!("loaded config from {}", path.display());
         Ok(config)

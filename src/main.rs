@@ -76,6 +76,10 @@ fn main() -> Result<()> {
         "CachyDPI starting"
     );
 
+    // Anything the config loader wanted to say had to wait for this point:
+    // loading it is what tells us how to log.
+    config.log_deferred_notices(&cli.config);
+
     // Mode 7 (auto-detect) is advertised but not wired to the dpi_detect engine:
     // it falls through to the same arm as mode 5. Say so out loud instead of
     // pretending runtime probing happens.
