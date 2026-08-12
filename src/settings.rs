@@ -30,7 +30,7 @@ pub fn run_settings(config: &Config, config_path: &Path) -> Result<()> {
     let current = match config.domains.mode {
         DomainMode::None => "all  (god mode — every site)",
         DomainMode::Blacklist => "list (blacklist.txt only)",
-        DomainMode::Whitelist => "whitelist",
+        DomainMode::Exempt => "exempt",
     };
 
     let blacklist_file = resolve_blacklist_path(config);

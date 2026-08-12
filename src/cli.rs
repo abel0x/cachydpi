@@ -77,9 +77,11 @@ pub struct Cli {
     #[arg(long)]
     pub blacklist: Option<PathBuf>,
 
-    /// Domain whitelist file (only process these domains)
-    #[arg(long)]
-    pub whitelist: Option<PathBuf>,
+    /// Domain exemption file: these domains are LEFT ALONE, everything else is
+    /// processed. Accepts the deprecated `--whitelist` spelling, which named
+    /// the opposite of what it does.
+    #[arg(long, alias = "whitelist")]
+    pub exempt: Option<PathBuf>,
 
     /// Verbose logging level (-v, -vv, -vvv)
     #[arg(short, long, action = clap::ArgAction::Count)]

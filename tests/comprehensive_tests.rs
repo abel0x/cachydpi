@@ -1108,8 +1108,8 @@ mod path_traversal {
     #[test]
     fn whitelist_also_checked() {
         let mut config = Config::default();
-        config.domains.mode = DomainMode::Whitelist;
-        config.domains.whitelist_file = Some("/etc/shadow".to_string());
+        config.domains.mode = DomainMode::Exempt;
+        config.domains.exempt_file = Some("/etc/shadow".to_string());
         let _ = config.load_domain_lists();
         assert!(
             config.domain_set.is_empty(),
@@ -1244,7 +1244,7 @@ mod config_edge_cases {
     fn domain_mode_display() {
         assert_eq!(format!("{}", DomainMode::None), "none");
         assert_eq!(format!("{}", DomainMode::Blacklist), "blacklist");
-        assert_eq!(format!("{}", DomainMode::Whitelist), "whitelist");
+        assert_eq!(format!("{}", DomainMode::Exempt), "exempt");
     }
 
     #[test]

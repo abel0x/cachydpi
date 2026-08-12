@@ -187,11 +187,11 @@ multi_fragment      = true   # split TLS ClientHello into 3 segments instead of 
 disorder            = true   # send fragments in reverse order
 
 [domains]
-mode           = "blacklist"                    # "none" | "blacklist" | "whitelist"
+mode           = "blacklist"                    # "none" | "blacklist" | "exempt"
 blacklist_file = "/etc/cachydpi/blacklist.txt"
-# whitelist_file = "/etc/cachydpi/whitelist.txt"
+# exempt_file    = "/etc/cachydpi/exempt.txt"
 # blacklist = ["youtube.com", "x.com"]          # inline entries are merged with the file
-whitelist      = []
+exempt         = []
 
 [logging]
 level    = "info"   # error | warn | info | debug | trace
@@ -205,7 +205,7 @@ Domain matching is by **exact domain or a true subdomain** (label-boundary), nev
 
 - **`none`** — apply the bypass to every domain.
 - **`blacklist`** — apply the bypass **only** to listed domains. This is the shipped default, paired with `blacklist.txt`.
-- **`whitelist`** — apply the bypass to **everything except** the listed (trusted) domains.
+- **`exempt`** — apply the bypass to **everything except** the listed domains. Must not be empty: an empty exemption list would bypass every site, which is what `none` is for. (Called `whitelist` before v1.1.0; the old spelling still loads but warns.)
 
 Domain-list file paths are restricted to `/etc/cachydpi/` and `/usr/share/cachydpi/` and are canonicalized to reject symlink/`..` escapes (see [SECURITY.md](SECURITY.md)).
 
@@ -223,7 +223,7 @@ Domain-list file paths are restricted to `/etc/cachydpi/` and `/usr/share/cachyd
 | `--wrong-chksum` | Fake packets with wrong TCP checksum |
 | `--wrong-seq` | Fake packets with wrong TCP sequence |
 | `--http-split <N>` / `--tls-split <N>` | Split positions (0 = auto) |
-| `--blacklist <file>` / `--whitelist <file>` | Domain-list file (also sets the corresponding mode) |
+| `--blacklist <file>` / `--exempt <file>` | Domain-list file (also sets the corresponding mode). `--whitelist` is a deprecated alias for `--exempt` |
 | `--no-desync` / `--no-disorder` / `--no-multi-frag` | Disable the named desync technique |
 | `-v` | Verbose: `-v` debug, `-vv`/`-vvv` trace |
 | `--log-file <file>` | Log to a file instead of journald |
@@ -309,7 +309,7 @@ A minimal valid config needs the `[domains]` section with a `mode`:
 
 ```toml
 [domains]
-mode = "blacklist"   # or "whitelist", or "none" to bypass every site
+mode = "blacklist"   # or "exempt", or "none" to bypass every site
 ```
 
 ### Other problems

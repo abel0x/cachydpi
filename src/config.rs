@@ -102,7 +102,16 @@ pub enum DomainMode {
     None,
     #[default]
     Blacklist,
-    Whitelist,
+    /// Exemption list: the listed domains are left alone and everything else
+    /// gets the bypass.
+    ///
+    /// Spelled `whitelist` until now, which described the opposite of what it
+    /// does — a whitelist reads as "only these", so an operator writing
+    /// `mode = "whitelist"` with a short list would expect a narrow bypass and
+    /// get the widest one. The old spelling is still accepted for one release,
+    /// with a warning.
+    #[serde(rename = "exempt", alias = "whitelist")]
+    Exempt,
 }
 
 impl std::fmt::Display for DomainMode {
@@ -110,14 +119,14 @@ impl std::fmt::Display for DomainMode {
         match self {
             DomainMode::None => write!(f, "none"),
             DomainMode::Blacklist => write!(f, "blacklist"),
-            DomainMode::Whitelist => write!(f, "whitelist"),
+            DomainMode::Exempt => write!(f, "exempt"),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DomainConfig {
-    /// Mode: none, blacklist, or whitelist.
+    /// Mode: none, blacklist, or exempt.
     ///
     /// Required rather than defaulted: which traffic gets rewritten is the
     /// security-relevant decision in this file, so it has to be stated, not
@@ -126,15 +135,15 @@ pub struct DomainConfig {
     /// Path to blacklist file
     #[serde(default)]
     pub blacklist_file: Option<String>,
-    /// Path to whitelist file
-    #[serde(default)]
-    pub whitelist_file: Option<String>,
+    /// Path to the exemption list (`whitelist_file` before the rename)
+    #[serde(default, alias = "whitelist_file")]
+    pub exempt_file: Option<String>,
     /// Inline blacklist domains
     #[serde(default)]
     pub blacklist: Vec<String>,
-    /// Inline whitelist domains
-    #[serde(default)]
-    pub whitelist: Vec<String>,
+    /// Inline exempt domains (`whitelist` before the rename)
+    #[serde(default, alias = "whitelist")]
+    pub exempt: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,9 +196,9 @@ impl Default for DomainConfig {
             // Restrictive by default — see DomainMode.
             mode: DomainMode::Blacklist,
             blacklist_file: None,
-            whitelist_file: None,
+            exempt_file: None,
             blacklist: Vec::new(),
-            whitelist: Vec::new(),
+            exempt: Vec::new(),
         }
     }
 }
@@ -201,6 +210,37 @@ impl Default for LogConfig {
             journald: true,
             file: None,
         }
+    }
+}
+
+/// Warn when a config still uses the pre-rename `whitelist` spelling.
+///
+/// The old names are accepted through serde aliases for one release, but they
+/// describe the opposite of what the mode does, so say it out loud rather than
+/// letting the misleading name live on silently. Detected from the raw text
+/// because serde aliases do not report which spelling was matched.
+fn warn_on_deprecated_whitelist_spelling(content: &str, path: &Path) {
+    let uses_old_spelling = content.lines().any(|line| {
+        let line = line.trim();
+        if line.starts_with('#') {
+            return false;
+        }
+        line.contains("whitelist_file")
+            || line.starts_with("whitelist")
+            || (line.starts_with("mode") && line.contains("\"whitelist\""))
+    });
+
+    if uses_old_spelling {
+        // Config loading necessarily precedes logging setup — the log level
+        // comes out of this very file — so a tracing macro here would go
+        // nowhere. stderr reaches the journal under the systemd unit and the
+        // terminal in the foreground.
+        eprintln!(
+            "warning: {}: \"whitelist\" is deprecated and will be removed in a future \
+             release — rename it to \"exempt\" (mode = \"exempt\", exempt_file, exempt). \
+             It never meant \"bypass only these\"; the listed domains are the ones left alone",
+            path.display()
+        );
     }
 }
 
@@ -275,6 +315,8 @@ impl Config {
                 path.display()
             )
         })?;
+
+        warn_on_deprecated_whitelist_spelling(&content, path);
 
         debug!("loaded config from {}", path.display());
         Ok(config)
@@ -363,9 +405,9 @@ impl Config {
             self.domains.blacklist_file = Some(blacklist.to_string_lossy().to_string());
         }
 
-        if let Some(ref whitelist) = cli.whitelist {
-            self.domains.mode = DomainMode::Whitelist;
-            self.domains.whitelist_file = Some(whitelist.to_string_lossy().to_string());
+        if let Some(ref exempt) = cli.exempt {
+            self.domains.mode = DomainMode::Exempt;
+            self.domains.exempt_file = Some(exempt.to_string_lossy().to_string());
         }
 
         // Apply verbose logging
@@ -376,7 +418,7 @@ impl Config {
         }
     }
 
-    /// Load domain lists from external files (blacklist_file / whitelist_file).
+    /// Load domain lists from external files (blacklist_file / exempt_file).
     /// Merges file contents into the inline blacklist/whitelist vectors,
     /// then builds a HashSet for O(1) lookup.
     pub fn load_domain_lists(&mut self) -> Result<()> {
@@ -409,7 +451,7 @@ impl Config {
             }
         }
 
-        if let Some(ref path) = self.domains.whitelist_file {
+        if let Some(ref path) = self.domains.exempt_file {
             if !Self::is_safe_domain_path(path) {
                 warn!(
                     "whitelist path rejected (must be under /etc/cachydpi/ or /usr/share/cachydpi/): {}",
@@ -420,16 +462,16 @@ impl Config {
                 if p.exists() {
                     let content = fs::read_to_string(p)
                         .with_context(|| format!("failed to read whitelist file: {}", path))?;
-                    let count_before = self.domains.whitelist.len();
+                    let count_before = self.domains.exempt.len();
                     for line in content.lines() {
                         let trimmed = line.trim();
                         if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                            self.domains.whitelist.push(trimmed.to_lowercase());
+                            self.domains.exempt.push(trimmed.to_lowercase());
                         }
                     }
                     info!(
                         file = path.as_str(),
-                        domains = self.domains.whitelist.len() - count_before,
+                        domains = self.domains.exempt.len() - count_before,
                         "loaded whitelist file"
                     );
                 } else {
@@ -441,24 +483,27 @@ impl Config {
         // Build the HashSet for fast lookup
         let list = match self.domains.mode {
             DomainMode::Blacklist => &self.domains.blacklist,
-            DomainMode::Whitelist => &self.domains.whitelist,
+            DomainMode::Exempt => &self.domains.exempt,
             DomainMode::None => return Ok(()),
         };
         self.domain_set = list.iter().map(|d| d.to_lowercase()).collect();
         info!(domains = self.domain_set.len(), mode = %self.domains.mode, "domain filter ready");
 
-        // An empty list is not an error, but it makes the daemon look healthy
-        // while doing nothing (blacklist) or everything (whitelist). Say which,
-        // so a silent no-op is not mistaken for a working bypass.
         if self.domain_set.is_empty() {
             match self.domains.mode {
+                // Nothing listed to rescue: a no-op, but a safe one. Say so,
+                // because a daemon that bypasses nothing still looks healthy.
                 DomainMode::Blacklist => warn!(
                     "domain list is empty — no traffic will be bypassed; add domains to \
-                     the blacklist file or set [domains] mode = \"none\" to bypass every site"
+                     the blacklist file, or set [domains] mode = \"none\" to bypass every site"
                 ),
-                DomainMode::Whitelist => warn!(
-                    "whitelist is empty — every domain will be bypassed, which is what \
-                     mode = \"none\" means; list the domains to exclude, or switch mode"
+                // Nothing exempted means everything is bypassed, which is
+                // exactly mode = "none" — an unconfigured list must not be the
+                // way to reach the widest possible bypass.
+                DomainMode::Exempt => bail!(
+                    "[domains] mode = \"exempt\" with an empty list would bypass every \
+                     site, which is what mode = \"none\" means. List the domains to leave \
+                     alone, or say mode = \"none\" explicitly if that is the intent"
                 ),
                 DomainMode::None => {}
             }
@@ -473,13 +518,13 @@ impl Config {
     /// - `Blacklist`: the listed domains are the ISP-blocked sites we want to
     ///   rescue — apply the bypass ONLY to them. This is the shipped default,
     ///   paired with blacklist.txt.
-    /// - `Whitelist`: the listed domains are trusted/excepted — apply the
-    ///   bypass to everything EXCEPT them.
+    /// - `Exempt`: the listed domains are left alone — apply the bypass to
+    ///   everything EXCEPT them.
     /// - `None`: apply the bypass to every domain.
     pub fn should_process_domain(&self, domain: &str) -> bool {
         match self.domains.mode {
             DomainMode::Blacklist => self.domain_in_set(domain),
-            DomainMode::Whitelist => !self.domain_in_set(domain),
+            DomainMode::Exempt => !self.domain_in_set(domain),
             DomainMode::None => true,
         }
     }
@@ -716,6 +761,70 @@ mod load_tests {
                 ),
             }
         }
+    }
+
+    /// Acceptance criterion for the empty-list cases: an unconfigured list must
+    /// never end up meaning "bypass everything", in either list mode.
+    #[test]
+    fn an_empty_list_never_means_maximum_bypass() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Blacklist with nothing listed: loads, and bypasses nothing.
+        let blacklist = dir.path().join("blacklist.toml");
+        fs::write(&blacklist, "[domains]\nmode = \"blacklist\"\n").unwrap();
+        let mut config = Config::load(&blacklist).unwrap();
+        config.load_domain_lists().unwrap();
+        assert!(
+            !config.should_process_domain("anything.com"),
+            "an empty blacklist must bypass nothing"
+        );
+
+        // Exempt with nothing listed would bypass everything, so it is refused:
+        // reaching the widest bypass requires saying mode = "none".
+        let exempt = dir.path().join("exempt.toml");
+        fs::write(&exempt, "[domains]\nmode = \"exempt\"\n").unwrap();
+        let mut config = Config::load(&exempt).unwrap();
+        assert!(
+            config.load_domain_lists().is_err(),
+            "an empty exemption list must not silently become god mode"
+        );
+    }
+
+    /// A populated exemption list behaves as its name says: listed domains are
+    /// left alone, everything else is processed.
+    #[test]
+    fn a_populated_exempt_list_leaves_listed_domains_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[domains]\nmode = \"exempt\"\nexempt = [\"safe.com\"]\n",
+        )
+        .unwrap();
+
+        let mut config = Config::load(&path).unwrap();
+        config.load_domain_lists().unwrap();
+        assert!(!config.should_process_domain("safe.com"));
+        assert!(config.should_process_domain("other.com"));
+    }
+
+    /// The pre-rename spelling keeps working for one release, mapping to the
+    /// same mode and the same list.
+    #[test]
+    fn the_deprecated_whitelist_spelling_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[domains]\nmode = \"whitelist\"\nwhitelist = [\"safe.com\"]\n",
+        )
+        .unwrap();
+
+        let mut config = Config::load(&path).expect("the old spelling must still load");
+        assert_eq!(config.domains.mode, DomainMode::Exempt);
+        config.load_domain_lists().unwrap();
+        assert!(!config.should_process_domain("safe.com"));
+        assert!(config.should_process_domain("other.com"));
     }
 
     /// The escape hatch still works: god mode remains reachable, but only when

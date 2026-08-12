@@ -50,11 +50,6 @@ fn main() -> Result<()> {
     // (e.g. queue_num = 65535, whose inbound queue would wrap to 0).
     config.validate().context("invalid configuration")?;
 
-    // Load domain lists from external files
-    config
-        .load_domain_lists()
-        .unwrap_or_else(|e| eprintln!("warning: failed to load domain lists: {}", e));
-
     // Handle subcommands early — they don't need logging, metrics, or privileges
     if let Some(cmd) = &cli.command {
         return handle_command(cmd, &config, &cli.config);
@@ -63,6 +58,16 @@ fn main() -> Result<()> {
     // Initialize logging
     cachydpi::logging::init(&config.logging, cli.verbose)
         .context("failed to initialize logging")?;
+
+    // Load domain lists from external files.
+    //
+    // Runs after logging is up so its diagnostics are actually visible, and its
+    // failures are fatal: this is where a domain filter that would bypass every
+    // site is rejected, so swallowing the error would reinstate exactly the
+    // fail-open it exists to prevent.
+    config
+        .load_domain_lists()
+        .context("failed to load domain lists")?;
 
     info!(
         version = cachydpi::VERSION,

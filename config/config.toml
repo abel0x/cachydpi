@@ -87,14 +87,19 @@ multi_fragment = true
 disorder = true
 
 [domains]
-# Filtering mode: "none" (all), "blacklist" (listed only), "whitelist" (except listed)
+# Filtering mode:
+#   "none"      — bypass every site
+#   "blacklist" — bypass ONLY the listed domains (default)
+#   "exempt"    — bypass everything EXCEPT the listed domains
+#                 (was called "whitelist", which said the opposite of what it does;
+#                  the old spelling still works but is deprecated)
 mode = "blacklist"
 
 # Blacklist file (one domain per line)
 blacklist_file = "/etc/cachydpi/blacklist.txt"
 
-# Whitelist file
-# whitelist_file = "/etc/cachydpi/whitelist.txt"
+# Exemption file (domains to leave alone)
+# exempt_file = "/etc/cachydpi/exempt.txt"
 
 # Inline blacklist (commonly blocked sites)
 # blacklist = [
@@ -108,8 +113,10 @@ blacklist_file = "/etc/cachydpi/blacklist.txt"
 #     "pastebin.com",
 # ]
 
-# Inline whitelist (skip these domains)
-whitelist = []
+# Inline exemption list (domains to leave alone).
+# Note: with mode = "exempt" this must not be empty — an empty exemption list
+# would bypass every site, which is what mode = "none" is for.
+exempt = []
 
 [logging]
 # Log level: "error", "warn", "info", "debug", "trace"

@@ -1364,8 +1364,8 @@ whitelist = ["safe.com"]
 "#;
         let f = write_temp_config(toml);
         let config = Config::load(f.path()).unwrap();
-        assert_eq!(config.domains.mode, DomainMode::Whitelist);
-        assert_eq!(config.domains.whitelist, vec!["safe.com"]);
+        assert_eq!(config.domains.mode, DomainMode::Exempt);
+        assert_eq!(config.domains.exempt, vec!["safe.com"]);
     }
 
     #[test]

@@ -263,7 +263,7 @@ fn domain_filter_blacklist() {
 #[test]
 fn domain_filter_whitelist() {
     let mut config = Config::default();
-    config.domains.mode = DomainMode::Whitelist;
+    config.domains.mode = DomainMode::Exempt;
     config.domain_set = ["safe.com"].iter().map(|s| s.to_string()).collect();
 
     // Whitelist is an exception list: listed (trusted) domains are SKIPPED,
@@ -286,7 +286,7 @@ fn whitelist_and_blacklist_are_opposites() {
     black.domain_set = domains.clone();
 
     let mut white = Config::default();
-    white.domains.mode = DomainMode::Whitelist;
+    white.domains.mode = DomainMode::Exempt;
     white.domain_set = domains;
 
     for domain in ["listed.com", "sub.listed.com", "other.com"] {
@@ -304,7 +304,7 @@ fn whitelist_partial_match_is_not_excluded() {
     // subdomain of it, so the bypass must still apply. This is the whitelist
     // analog of the blacklist partial-match guard.
     let mut config = Config::default();
-    config.domains.mode = DomainMode::Whitelist;
+    config.domains.mode = DomainMode::Exempt;
     config.domain_set = ["example.com".to_string()].into_iter().collect();
 
     // Exact whitelist hit → excluded from bypass.
@@ -321,8 +321,8 @@ fn whitelist_built_from_inline_list_via_load() {
     // from the inline whitelist vec (lowercasing entries), after which
     // filtering treats listed domains and their subdomains as trusted.
     let mut config = Config::default();
-    config.domains.mode = DomainMode::Whitelist;
-    config.domains.whitelist = vec!["Safe.COM".to_string(), "trusted.org".to_string()];
+    config.domains.mode = DomainMode::Exempt;
+    config.domains.exempt = vec!["Safe.COM".to_string(), "trusted.org".to_string()];
 
     config.load_domain_lists().expect("load_domain_lists should succeed");
 
