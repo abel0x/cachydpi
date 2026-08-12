@@ -80,16 +80,57 @@ impl Sent {
     }
 }
 
-/// Sysctl that administratively disables IPv6 while leaving AF_INET6 usable.
-const IPV6_DISABLE_SYSCTL: &str = "/proc/sys/net/ipv6/conf/all/disable_ipv6";
+/// Root of the per-interface IPv6 sysctls.
+const IPV6_CONF_ROOT: &str = "/proc/sys/net/ipv6/conf";
 
-/// Whether IPv6 is switched off system-wide via sysctl.
-///
-/// Split out from [`ipv6_available`] so the parsing can be tested: the sysctl
-/// is not writable from a user namespace, so the real file cannot be flipped in
-/// a test.
-fn ipv6_disabled_by_sysctl(path: &std::path::Path) -> bool {
+fn sysctl_flag_is_set(path: &std::path::Path) -> bool {
     matches!(std::fs::read_to_string(path), Ok(value) if value.trim() == "1")
+}
+
+/// Whether IPv6 is administratively switched off.
+///
+/// Takes the conf root rather than a single file so this can be tested: the
+/// real sysctls are not writable from a user namespace.
+///
+/// `all/disable_ipv6` is the machine-wide switch, but IPv6 is just as often
+/// turned off per interface, which leaves `all` reading 0 while nothing can
+/// actually carry IPv6. So if every configured interface has it disabled, treat
+/// IPv6 as off. Interfaces are the right unit here because CachyDPI is not
+/// bound to one — it filters through nftables hooks, which see them all.
+///
+/// A missing tree is deliberately *not* read as "disabled": its absence alone
+/// says nothing (an unusual /proc layout would switch IPv6 off for no reason),
+/// and a kernel genuinely built without IPv6 — or booted with `ipv6.disable=1`,
+/// where the module never loads — has no AF_INET6, which the socket probe in
+/// [`ipv6_available`] catches first.
+fn ipv6_disabled_by_sysctl(conf_root: &std::path::Path) -> bool {
+    if sysctl_flag_is_set(&conf_root.join("all").join("disable_ipv6")) {
+        return true;
+    }
+
+    let Ok(entries) = std::fs::read_dir(conf_root) else {
+        return false;
+    };
+
+    let (mut interfaces, mut disabled) = (0usize, 0usize);
+    for entry in entries.flatten() {
+        // "all" is the machine-wide switch handled above; "default" only seeds
+        // interfaces created later, so neither describes current capability.
+        let name = entry.file_name();
+        if name == "all" || name == "default" {
+            continue;
+        }
+        let flag = entry.path().join("disable_ipv6");
+        if !flag.exists() {
+            continue;
+        }
+        interfaces += 1;
+        if sysctl_flag_is_set(&flag) {
+            disabled += 1;
+        }
+    }
+
+    interfaces > 0 && interfaces == disabled
 }
 
 /// Whether this system can carry IPv6 at all.
@@ -110,7 +151,7 @@ pub fn ipv6_available() -> bool {
     if Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).is_err() {
         return false;
     }
-    !ipv6_disabled_by_sysctl(std::path::Path::new(IPV6_DISABLE_SYSCTL))
+    !ipv6_disabled_by_sysctl(std::path::Path::new(IPV6_CONF_ROOT))
 }
 
 /// A raw socket for sending crafted IP packets
@@ -380,26 +421,60 @@ mod tests {
     /// which is the difference between starting IPv4-only and refusing to
     /// start. It cannot be flipped from a user namespace, so the parsing is
     /// tested against files instead.
+    /// Build a fake /proc/sys/net/ipv6/conf tree: (interface, disable_ipv6).
+    fn fake_conf_root(entries: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for (iface, value) in entries {
+            let path = dir.path().join(iface);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("disable_ipv6"), format!("{value}\n")).unwrap();
+        }
+        dir
+    }
+
     #[test]
     fn ipv6_sysctl_is_read_as_a_disable_switch() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let disabled = dir.path().join("disabled");
-        std::fs::write(&disabled, "1\n").unwrap();
+        // The machine-wide switch.
+        let off = fake_conf_root(&[("all", "1"), ("lo", "0"), ("eth0", "0")]);
         assert!(
-            ipv6_disabled_by_sysctl(&disabled),
-            "disable_ipv6=1 means IPv6 is off"
+            ipv6_disabled_by_sysctl(off.path()),
+            "all/disable_ipv6=1 means IPv6 is off"
         );
 
-        let enabled = dir.path().join("enabled");
-        std::fs::write(&enabled, "0\n").unwrap();
-        assert!(!ipv6_disabled_by_sysctl(&enabled));
+        let on = fake_conf_root(&[("all", "0"), ("lo", "0"), ("eth0", "0")]);
+        assert!(!ipv6_disabled_by_sysctl(on.path()));
+    }
 
-        // No sysctl at all (kernel without IPv6 support) must not read as
-        // "disabled" here — that case is caught by the socket probe, and
-        // treating a missing file as disabled would switch IPv6 off on any
-        // system with an unusual /proc layout.
+    /// `all` reading 0 while every interface has IPv6 disabled is common in the
+    /// wild, and leaves nothing able to carry IPv6.
+    #[test]
+    fn ipv6_disabled_on_every_interface_counts_as_disabled() {
+        let all_ifaces_off = fake_conf_root(&[("all", "0"), ("lo", "1"), ("eth0", "1")]);
+        assert!(
+            ipv6_disabled_by_sysctl(all_ifaces_off.path()),
+            "every interface disabled means IPv6 is off in practice"
+        );
+
+        // One interface still carrying IPv6 is enough to keep it available.
+        let one_on = fake_conf_root(&[("all", "0"), ("lo", "1"), ("eth0", "0")]);
+        assert!(!ipv6_disabled_by_sysctl(one_on.path()));
+
+        // "default" only seeds interfaces created later, so it must not be
+        // mistaken for a live interface and tip the all-disabled verdict.
+        let only_default_off = fake_conf_root(&[("all", "0"), ("default", "1"), ("eth0", "0")]);
+        assert!(!ipv6_disabled_by_sysctl(only_default_off.path()));
+    }
+
+    /// A kernel without IPv6 has no sysctl tree at all. That must not read as
+    /// "disabled" on its own — the socket probe is what catches it — and it must
+    /// not error either.
+    #[test]
+    fn a_missing_sysctl_tree_is_not_treated_as_disabled() {
+        let dir = tempfile::tempdir().unwrap();
         assert!(!ipv6_disabled_by_sysctl(&dir.path().join("absent")));
+
+        // Present but empty (no interfaces yet) is also not a disable signal.
+        assert!(!ipv6_disabled_by_sysctl(dir.path()));
     }
 
     /// The IPv4-only path has to keep working, since that is where a machine
