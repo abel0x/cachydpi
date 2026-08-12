@@ -127,3 +127,13 @@ journald = true
 
 # Log to file (optional)
 # file = "/var/log/cachydpi/cachydpi.log"
+
+# Write intercepted packet contents to the log (TRACE level).
+#
+# PRIVACY: the dump contains the TLS ClientHello, so it records the SNI of
+# every site visited along with source and destination addresses. On a
+# persistent journal that is a lasting browsing history, written by a tool
+# meant to keep exactly that off the wire. Deliberately separate from the log
+# level, so raising the level alone never starts recording traffic. Turn on
+# only to debug packet construction, and turn it off again afterwards.
+# log_packet_bytes = false

@@ -326,6 +326,53 @@ fn decoy_failure_does_not_break_the_bypass() {
     );
 }
 
+/// The debug line for an action must describe it without carrying its bytes.
+/// Rendering the action itself put the TLS ClientHello — SNI included — into
+/// the journal once per packet, which is both a privacy leak and the bulk of
+/// the log volume.
+#[test]
+fn the_action_summary_carries_no_packet_contents() {
+    use cachydpi::strategies::PacketAction;
+
+    // A realistic ClientHello split into three fragments, with a recognisable
+    // SNI-like marker inside the payload.
+    let marker = b"blockedsite.example";
+    let mut first = vec![0x16, 0x03, 0x01];
+    first.extend_from_slice(marker);
+    first.resize(1234, 0x41);
+    let action = PacketAction::Fragment(vec![first, vec![0x42; 72], vec![0x43; 178]]);
+
+    let summary = action.summary().to_string();
+    let verbose = format!("{action:?}");
+
+    // The shape is still there…
+    assert!(summary.contains("fragment"), "summary: {summary}");
+    assert!(summary.contains("n=3"), "summary: {summary}");
+    for len in ["1234", "72", "178"] {
+        assert!(summary.contains(len), "summary must list {len}: {summary}");
+    }
+
+    // …but nothing of the payload is.
+    assert!(
+        !summary.contains(&marker.iter().map(|b| b.to_string()).collect::<String>()),
+        "summary must not contain payload bytes: {summary}"
+    );
+    for byte in ["0x41", "65,65", "66,66", "67,67"] {
+        assert!(
+            !summary.contains(byte),
+            "summary must not contain payload bytes ({byte}): {summary}"
+        );
+    }
+
+    // And the size difference is the point: the old line was the whole packet.
+    assert!(
+        summary.len() * 20 < verbose.len(),
+        "summary ({} bytes) should be far smaller than the full dump ({} bytes)",
+        summary.len(),
+        verbose.len()
+    );
+}
+
 /// A partial delivery must not authorise the drop either. The witness returned
 /// by send_fragments stands for every replacement, not just the last successful
 /// send: if fragment 1 goes out and fragment 2 fails, the original is still the

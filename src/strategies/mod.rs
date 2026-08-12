@@ -28,6 +28,49 @@ use crate::nfqueue::NfQueue;
 use crate::packet::{self, Direction, ParsedPacket};
 use crate::rawsocket::{RawSocket, Sent};
 
+/// Log-safe description of a [`PacketAction`].
+///
+/// `PacketAction`'s own `Debug` renders every fragment as a decimal byte array,
+/// so logging it wrote the TLS ClientHello — SNI included — into the journal for
+/// each packet. Formatting is done through `Display` so it only happens when the
+/// event is actually recorded.
+pub struct ActionSummary<'a>(&'a PacketAction);
+
+impl std::fmt::Display for ActionSummary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn lengths(f: &mut std::fmt::Formatter<'_>, packets: &[Vec<u8>]) -> std::fmt::Result {
+            write!(f, "n={} lens=[", packets.len())?;
+            for (i, p) in packets.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ",")?;
+                }
+                write!(f, "{}", p.len())?;
+            }
+            write!(f, "]")
+        }
+
+        match self.0 {
+            PacketAction::Accept => write!(f, "accept"),
+            PacketAction::Drop => write!(f, "drop"),
+            PacketAction::Modify(data) => write!(f, "modify len={}", data.len()),
+            PacketAction::Fragment(fragments) => {
+                write!(f, "fragment ")?;
+                lengths(f, fragments)
+            }
+            PacketAction::InjectThenAccept(fakes) => {
+                write!(f, "inject-then-accept ")?;
+                lengths(f, fakes)
+            }
+            PacketAction::InjectAndFragment { fakes, fragments } => {
+                write!(f, "inject fakes ")?;
+                lengths(f, fakes)?;
+                write!(f, " + fragment ")?;
+                lengths(f, fragments)
+            }
+        }
+    }
+}
+
 /// Action to take for a packet after strategy evaluation
 #[derive(Debug)]
 pub enum PacketAction {
@@ -46,6 +89,13 @@ pub enum PacketAction {
         fakes: Vec<Vec<u8>>,
         fragments: Vec<Vec<u8>>,
     },
+}
+
+impl PacketAction {
+    /// Describe this action for logs without revealing packet contents.
+    pub fn summary(&self) -> ActionSummary<'_> {
+        ActionSummary(self)
+    }
 }
 
 /// DPI bypass mode (matches GoodbyeDPI -1 through -6 + extras)
@@ -868,17 +918,32 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
         Direction::Inbound => engine.evaluate_inbound(&parsed),
     };
 
-    // Log non-Accept actions at debug level
+    // Log non-Accept actions at debug level.
+    //
+    // Only a summary: rendering the action itself writes every fragment out as
+    // a byte array, which puts the TLS ClientHello — SNI and all — into the
+    // journal for every packet. That is a durable record of which sites were
+    // visited, written by a tool whose whole purpose is keeping that off the
+    // wire, and it dwarfs everything else in the log.
     match &action {
         PacketAction::Accept => {}
         other => {
             debug!(
                 id = packet_id,
-                action = ?other,
+                action = %other.summary(),
                 src = %parsed.src_addr(),
                 dst = %parsed.dst_addr(),
                 "strategy applied"
             );
+            // The bytes themselves stay behind a second, explicit switch, so
+            // raising the log level alone can never start recording traffic.
+            if engine.config.logging.log_packet_bytes {
+                trace!(
+                    id = packet_id,
+                    action = ?other,
+                    "strategy applied (packet contents)"
+                );
+            }
         }
     }
 

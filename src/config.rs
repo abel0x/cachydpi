@@ -155,6 +155,15 @@ pub struct LogConfig {
     pub journald: bool,
     /// Optional log file path
     pub file: Option<String>,
+    /// Write intercepted packet contents to the log at TRACE level.
+    ///
+    /// Off by default and deliberately separate from the log level: the dump
+    /// contains the TLS ClientHello, so it records the SNI of every site
+    /// visited, alongside source and destination addresses. On a persistent
+    /// journal that is a lasting history of browsing, produced by a tool whose
+    /// purpose is to keep exactly that off the wire. Only turn it on to debug
+    /// packet construction, and only for as long as that takes.
+    pub log_packet_bytes: bool,
 }
 
 // ── Default implementations ──
@@ -209,6 +218,7 @@ impl Default for LogConfig {
             level: "info".to_string(),
             journald: true,
             file: None,
+            log_packet_bytes: false,
         }
     }
 }
