@@ -194,11 +194,15 @@ fn main() -> Result<()> {
     let mut inbound_queue = NfQueue::open(config.general.queue_num + 1, config.general.ipv6)
         .context("failed to open inbound nfqueue")?;
 
-    // Drop unnecessary privileges after setup
-    cachydpi::privileges::drop_unnecessary_caps().context(
-        "FATAL: failed to drop capabilities — refusing to continue with elevated privileges",
-    )?;
-
+    // Drop privileges after setup.
+    //
+    // drop_root() reduces to RETAINED_CAPS on every path it can take — the
+    // three that stay put call drop_unnecessary_caps() themselves, and the
+    // setuid path rebuilds the sets from RETAINED_CAPS after the uid change.
+    // Calling drop_unnecessary_caps() here as well only repeated the work and
+    // logged the same "dropped capabilities" line twice, which made the order
+    // of the drop ambiguous in exactly the file where it should be clearest.
+    //
     // Switch to a non-root user where that is possible. The preflight above
     // already established which path applies and that it can succeed, so a
     // failure here is a real one: continuing would mean running with an
