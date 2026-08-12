@@ -89,12 +89,20 @@ pub fn preflight_drop_root() -> Result<()> {
     let user = nix::unistd::User::from_name("cachydpi")
         .context("failed to lookup cachydpi user")?
         .expect("presence checked above");
-    if !rehearse_privilege_drop(&user)? {
-        bail!(
+    match rehearse_privilege_drop(&user)? {
+        Rehearsal::Succeeded => {}
+        Rehearsal::Failed => bail!(
             "switching to the cachydpi user (uid {}) is not possible here — the uid is \
              most likely not mapped into this user namespace",
             user.uid.as_raw()
-        );
+        ),
+        // Not evidence of anything, so do not block on it. If the real drop
+        // does fail later, startup aborts and the nftables rules are removed
+        // again on the way out.
+        Rehearsal::Inconclusive(why) => warn!(
+            "could not verify the privilege drop before installing rules ({why}) — \
+             continuing"
+        ),
     }
 
     debug!("privilege drop preflight passed (setuid to cachydpi is viable)");
@@ -109,7 +117,7 @@ pub fn preflight_drop_root() -> Result<()> {
 /// the parent is still able to abort cleanly.
 ///
 /// Safe to fork here: preflight runs before any thread is spawned.
-fn rehearse_privilege_drop(user: &nix::unistd::User) -> Result<bool> {
+fn rehearse_privilege_drop(user: &nix::unistd::User) -> Result<Rehearsal> {
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Child) => {
             let ok = unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) } == 0
@@ -122,14 +130,43 @@ fn rehearse_privilege_drop(user: &nix::unistd::User) -> Result<bool> {
             unsafe { libc::_exit(i32::from(!ok)) }
         }
         Ok(nix::unistd::ForkResult::Parent { child }) => {
-            match nix::sys::wait::waitpid(child, None) {
-                Ok(nix::sys::wait::WaitStatus::Exited(_, 0)) => Ok(true),
-                Ok(_) => Ok(false),
-                Err(e) => bail!("could not wait for the privilege drop rehearsal: {e}"),
-            }
+            Ok(classify_rehearsal(nix::sys::wait::waitpid(child, None)))
         }
         Err(e) => bail!("could not fork to rehearse the privilege drop: {e}"),
     }
+}
+
+/// Turn the child's wait status into a verdict.
+///
+/// Split out from the fork so the classification can be tested directly: the
+/// distinction that matters is invisible in an exit code alone.
+fn classify_rehearsal(status: nix::Result<nix::sys::wait::WaitStatus>) -> Rehearsal {
+    use nix::sys::wait::WaitStatus;
+    match status {
+        Ok(WaitStatus::Exited(_, 0)) => Rehearsal::Succeeded,
+        // A non-zero exit is the child reporting that a syscall refused.
+        Ok(WaitStatus::Exited(_, _)) => Rehearsal::Failed,
+        // Killed by a signal — the OOM killer, or a SIGTERM aimed at the
+        // process group during startup. That says nothing about whether the
+        // uid switch works, so it must not be reported as a failure and stop a
+        // daemon that would have run fine.
+        Ok(WaitStatus::Signaled(_, signal, _)) => {
+            Rehearsal::Inconclusive(format!("the rehearsal was killed by {signal:?}"))
+        }
+        Ok(other) => Rehearsal::Inconclusive(format!("the rehearsal ended unexpectedly: {other:?}")),
+        Err(e) => Rehearsal::Inconclusive(format!("could not wait for the rehearsal: {e}")),
+    }
+}
+
+/// Outcome of [`rehearse_privilege_drop`].
+///
+/// Deliberately three-valued: "the child did not exit 0" covers both a real
+/// setuid failure and the rehearsal being killed for unrelated reasons, and
+/// treating the second as the first would abort startup over an OOM kill.
+enum Rehearsal {
+    Succeeded,
+    Failed,
+    Inconclusive(String),
 }
 
 /// Restore the retained capabilities after a uid change and make them ambient.
@@ -365,6 +402,42 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// A rehearsal killed by a signal says nothing about whether the uid switch
+    /// works. Folding it in with a non-zero exit would abort startup over an
+    /// OOM kill or a SIGTERM aimed at the process group.
+    #[test]
+    fn a_signalled_rehearsal_is_inconclusive_not_a_failure() {
+        use nix::sys::signal::Signal;
+        use nix::sys::wait::WaitStatus;
+        let pid = nix::unistd::Pid::from_raw(1234);
+
+        assert!(matches!(
+            classify_rehearsal(Ok(WaitStatus::Exited(pid, 0))),
+            Rehearsal::Succeeded
+        ));
+        assert!(
+            matches!(
+                classify_rehearsal(Ok(WaitStatus::Exited(pid, 1))),
+                Rehearsal::Failed
+            ),
+            "a non-zero exit is the child reporting a refused syscall"
+        );
+        assert!(
+            matches!(
+                classify_rehearsal(Ok(WaitStatus::Signaled(pid, Signal::SIGKILL, false))),
+                Rehearsal::Inconclusive(_)
+            ),
+            "a signalled rehearsal must not be reported as a failed uid switch"
+        );
+        assert!(
+            matches!(
+                classify_rehearsal(Err(nix::errno::Errno::ECHILD)),
+                Rehearsal::Inconclusive(_)
+            ),
+            "not being able to wait is not evidence that setuid is impossible"
+        );
     }
 
     /// The ordering trap that ambient raising depends on: PR_SET_KEEPCAPS
