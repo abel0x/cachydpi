@@ -116,8 +116,14 @@ fn ipv6_disabled_by_sysctl(conf_root: &std::path::Path) -> bool {
     for entry in entries.flatten() {
         // "all" is the machine-wide switch handled above; "default" only seeds
         // interfaces created later, so neither describes current capability.
+        //
+        // Loopback is excluded because it is not evidence either way: ::1 stays
+        // up on a machine with IPv6 switched off everywhere else, and loopback
+        // traffic never crosses a DPI. Counting it would leave the commonest
+        // "IPv6 off" setup — every real interface disabled, lo untouched —
+        // reading as available.
         let name = entry.file_name();
-        if name == "all" || name == "default" {
+        if name == "all" || name == "default" || name == "lo" {
             continue;
         }
         let flag = entry.path().join("disable_ipv6");
@@ -463,6 +469,29 @@ mod tests {
         // mistaken for a live interface and tip the all-disabled verdict.
         let only_default_off = fake_conf_root(&[("all", "0"), ("default", "1"), ("eth0", "0")]);
         assert!(!ipv6_disabled_by_sysctl(only_default_off.path()));
+    }
+
+    /// The commonest way IPv6 is switched off in the wild: every real interface
+    /// disabled while loopback is left alone. Counting lo — whose disable_ipv6
+    /// is almost always 0 — would report IPv6 as available on exactly those
+    /// machines.
+    #[test]
+    fn loopback_alone_does_not_make_ipv6_look_available() {
+        let real_ifaces_off = fake_conf_root(&[
+            ("all", "0"),
+            ("lo", "0"), // untouched, as it usually is
+            ("enp6s0", "1"),
+            ("wlan0", "1"),
+        ]);
+        assert!(
+            ipv6_disabled_by_sysctl(real_ifaces_off.path()),
+            "lo being up must not outvote every real interface being disabled"
+        );
+
+        // With no real interfaces at all there is nothing to conclude, so the
+        // sysctls must not claim IPv6 is disabled; the socket probe decides.
+        let only_loopback = fake_conf_root(&[("all", "0"), ("lo", "0")]);
+        assert!(!ipv6_disabled_by_sysctl(only_loopback.path()));
     }
 
     /// A kernel without IPv6 has no sysctl tree at all. That must not read as
