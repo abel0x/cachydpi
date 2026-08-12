@@ -23,8 +23,8 @@ before restarting the service.
 - **`whitelist` is renamed to `exempt`** — `mode = "exempt"`, `exempt_file`,
   `exempt`, and `--exempt`. It always meant "leave these domains alone and
   bypass everything else", which is the opposite of what "whitelist" reads as.
-  The old spelling still loads for this release and prints a deprecation
-  warning; it will be removed in a future one.
+  The old spelling still loads and prints a deprecation warning naming its
+  removal; **it is removed in 1.2.0**.
 - **`mode = "exempt"` with an empty list is refused.** Exempting nothing means
   bypassing every site, which is what `mode = "none"` is for; reaching the
   widest bypass now requires asking for it.

@@ -108,8 +108,8 @@ pub enum DomainMode {
     /// Spelled `whitelist` until now, which described the opposite of what it
     /// does — a whitelist reads as "only these", so an operator writing
     /// `mode = "whitelist"` with a short list would expect a narrow bypass and
-    /// get the widest one. The old spelling is still accepted for one release,
-    /// with a warning.
+    /// get the widest one. The old spelling is still accepted, with a warning,
+    /// and is removed in 1.2.0.
     #[serde(rename = "exempt", alias = "whitelist")]
     Exempt,
 }
@@ -213,14 +213,14 @@ impl Default for LogConfig {
     }
 }
 
-/// Warn when a config still uses the pre-rename `whitelist` spelling.
-///
-/// The old names are accepted through serde aliases for one release, but they
-/// describe the opposite of what the mode does, so say it out loud rather than
-/// letting the misleading name live on silently. Detected from the raw text
-/// because serde aliases do not report which spelling was matched.
-fn warn_on_deprecated_whitelist_spelling(content: &str, path: &Path) {
-    let uses_old_spelling = content.lines().any(|line| {
+/// Release that drops the `whitelist` aliases. Named here so the warning, the
+/// CHANGELOG and the tests all quote one value rather than a vague "a future
+/// release" that nobody ever acts on.
+const DEPRECATED_WHITELIST_REMOVED_IN: &str = "1.2.0";
+
+/// Whether a config still spells the exemption list the old way.
+fn config_uses_deprecated_whitelist_spelling(content: &str) -> bool {
+    content.lines().any(|line| {
         let line = line.trim();
         if line.starts_with('#') {
             return false;
@@ -228,18 +228,27 @@ fn warn_on_deprecated_whitelist_spelling(content: &str, path: &Path) {
         line.contains("whitelist_file")
             || line.starts_with("whitelist")
             || (line.starts_with("mode") && line.contains("\"whitelist\""))
-    });
+    })
+}
 
-    if uses_old_spelling {
+/// Warn when a config still uses the pre-rename `whitelist` spelling.
+///
+/// The old names are accepted through serde aliases until 1.2.0, but they
+/// describe the opposite of what the mode does, so say it out loud rather than
+/// letting the misleading name live on silently. Detected from the raw text
+/// because serde aliases do not report which spelling was matched.
+fn warn_on_deprecated_whitelist_spelling(content: &str, path: &Path) {
+    if config_uses_deprecated_whitelist_spelling(content) {
         // Config loading necessarily precedes logging setup — the log level
         // comes out of this very file — so a tracing macro here would go
         // nowhere. stderr reaches the journal under the systemd unit and the
         // terminal in the foreground.
         eprintln!(
-            "warning: {}: \"whitelist\" is deprecated and will be removed in a future \
-             release — rename it to \"exempt\" (mode = \"exempt\", exempt_file, exempt). \
-             It never meant \"bypass only these\"; the listed domains are the ones left alone",
-            path.display()
+            "warning: {}: \"whitelist\" is deprecated and will be REMOVED IN {} — \
+             rename it to \"exempt\" (mode = \"exempt\", exempt_file, exempt). It never \
+             meant \"bypass only these\"; the listed domains are the ones left alone",
+            path.display(),
+            DEPRECATED_WHITELIST_REMOVED_IN
         );
     }
 }
@@ -857,7 +866,32 @@ mod load_tests {
         assert!(config.should_process_domain("other.com"));
     }
 
-    /// The pre-rename spelling keeps working for one release, mapping to the
+    /// A deprecation without a stated end date is how the dead `install=`
+    /// directive survived in this project. The warning must name the release
+    /// that removes the alias, so it cannot quietly become permanent.
+    #[test]
+    fn the_deprecation_warning_names_its_removal_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let old_spelling = "[domains]\nmode = \"whitelist\"\nwhitelist = [\"safe.com\"]\n";
+        fs::write(&path, old_spelling).unwrap();
+
+        // The detector fires on this content…
+        assert!(
+            config_uses_deprecated_whitelist_spelling(old_spelling),
+            "the old spelling must still be detected"
+        );
+        // …and the message that goes with it names the removal release, which
+        // is checked against the crate version so the two cannot drift apart.
+        assert!(
+            DEPRECATED_WHITELIST_REMOVED_IN > crate::VERSION,
+            "the removal release ({DEPRECATED_WHITELIST_REMOVED_IN}) must be ahead of \
+             the current version ({}) — drop the alias once it is reached",
+            crate::VERSION
+        );
+    }
+
+    /// The pre-rename spelling keeps working until 1.2.0, mapping to the
     /// same mode and the same list.
     #[test]
     fn the_deprecated_whitelist_spelling_still_loads() {

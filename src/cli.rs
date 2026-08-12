@@ -78,8 +78,8 @@ pub struct Cli {
     pub blacklist: Option<PathBuf>,
 
     /// Domain exemption file: these domains are LEFT ALONE, everything else is
-    /// processed. Accepts the deprecated `--whitelist` spelling, which named
-    /// the opposite of what it does.
+    /// processed. `--whitelist` is a deprecated alias, removed in 1.2.0: it
+    /// named the opposite of what it does.
     #[arg(long, alias = "whitelist")]
     pub exempt: Option<PathBuf>,
 
