@@ -489,13 +489,19 @@ impl Config {
         self.domain_set = list.iter().map(|d| d.to_lowercase()).collect();
         info!(domains = self.domain_set.len(), mode = %self.domains.mode, "domain filter ready");
 
-        if self.domain_set.is_empty() {
+        if self.domain_set.is_empty() && self.domain_filter_is_used() {
             match self.domains.mode {
-                // Nothing listed to rescue: a no-op, but a safe one. Say so,
-                // because a daemon that bypasses nothing still looks healthy.
-                DomainMode::Blacklist => warn!(
-                    "domain list is empty — no traffic will be bypassed; add domains to \
-                     the blacklist file, or set [domains] mode = \"none\" to bypass every site"
+                // Nothing listed to rescue means no active technique ever
+                // fires: the sites the operator installed this to reach stay
+                // blocked while the service reports itself healthy. That is
+                // indistinguishable from a broken tool, so refuse it the same
+                // way an empty exemption list is refused — both are "you chose
+                // this mode and did not configure it".
+                DomainMode::Blacklist => bail!(
+                    "[domains] mode = \"blacklist\" with an empty list would bypass \
+                     nothing, so every blocked site stays blocked. Check that the \
+                     blacklist file exists and is under /etc/cachydpi/, add domains to \
+                     it, or set mode = \"none\" to bypass every site"
                 ),
                 // Nothing exempted means everything is bypassed, which is
                 // exactly mode = "none" — an unconfigured list must not be the
@@ -510,6 +516,20 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Whether the configured bypass mode ever consults the domain filter.
+    ///
+    /// Mode 1 is passive-only: outbound packets are accepted whatever the list
+    /// says, and the inbound side that drops DPI-forged RSTs, redirects and TLS
+    /// alerts never looks at the list at all. An empty list is therefore not a
+    /// misconfiguration there, and refusing to start would kill a passive
+    /// defence that works perfectly.
+    ///
+    /// Kept in step with `BypassMode::from_mode_number` by
+    /// `passive_is_the_only_mode_without_the_domain_filter`.
+    fn domain_filter_is_used(&self) -> bool {
+        self.general.mode != 1
     }
 
     /// Check whether DPI bypass should be applied to `domain`.
@@ -763,31 +783,60 @@ mod load_tests {
         }
     }
 
-    /// Acceptance criterion for the empty-list cases: an unconfigured list must
-    /// never end up meaning "bypass everything", in either list mode.
+    /// Both list modes treat "you chose this mode and did not configure it" the
+    /// same way: refuse. One would bypass everything, the other nothing, and
+    /// both leave a service that reports itself healthy while not doing the job
+    /// it was installed for.
     #[test]
-    fn an_empty_list_never_means_maximum_bypass() {
+    fn an_unconfigured_list_is_refused_in_both_modes() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Blacklist with nothing listed: loads, and bypasses nothing.
-        let blacklist = dir.path().join("blacklist.toml");
-        fs::write(&blacklist, "[domains]\nmode = \"blacklist\"\n").unwrap();
-        let mut config = Config::load(&blacklist).unwrap();
-        config.load_domain_lists().unwrap();
-        assert!(
-            !config.should_process_domain("anything.com"),
-            "an empty blacklist must bypass nothing"
-        );
+        for mode in ["blacklist", "exempt"] {
+            let path = dir.path().join(format!("{mode}.toml"));
+            fs::write(&path, format!("[domains]\nmode = \"{mode}\"\n")).unwrap();
+            let mut config = Config::load(&path).unwrap();
+            assert!(
+                config.load_domain_lists().is_err(),
+                "an empty {mode} list must be refused rather than started with"
+            );
+        }
+    }
 
-        // Exempt with nothing listed would bypass everything, so it is refused:
-        // reaching the widest bypass requires saying mode = "none".
-        let exempt = dir.path().join("exempt.toml");
-        fs::write(&exempt, "[domains]\nmode = \"exempt\"\n").unwrap();
-        let mut config = Config::load(&exempt).unwrap();
-        assert!(
-            config.load_domain_lists().is_err(),
-            "an empty exemption list must not silently become god mode"
-        );
+    /// …except in passive-only mode, where the list is never consulted: the
+    /// outbound side accepts regardless and the inbound side that drops forged
+    /// RSTs does not look at it. Refusing there would stop a working defence.
+    #[test]
+    fn passive_only_mode_accepts_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passive.toml");
+        fs::write(
+            &path,
+            "[general]\nmode = 1\n\n[domains]\nmode = \"blacklist\"\n",
+        )
+        .unwrap();
+
+        let mut config = Config::load(&path).unwrap();
+        config
+            .load_domain_lists()
+            .expect("passive-only mode does not need a domain list");
+    }
+
+    /// The predicate above hard-codes mode 1, so pin the assumption it rests
+    /// on: passive is the only mode that applies no active technique.
+    #[test]
+    fn passive_is_the_only_mode_without_the_domain_filter() {
+        use crate::strategies::BypassMode;
+
+        for mode in 1..=7u8 {
+            let mut config = Config::default();
+            config.general.mode = mode;
+            let passive = matches!(BypassMode::from_mode_number(mode), BypassMode::Passive);
+            assert_eq!(
+                config.domain_filter_is_used(),
+                !passive,
+                "mode {mode} disagrees with BypassMode about needing the domain filter"
+            );
+        }
     }
 
     /// A populated exemption list behaves as its name says: listed domains are
