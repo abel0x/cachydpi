@@ -4,7 +4,7 @@
 
 CachyDPI is a Rust daemon that intercepts outgoing TCP/UDP traffic through **nftables + NFQUEUE** and applies packet-manipulation techniques (fragmentation, fake-packet injection, passive-defense drops) to defeat the Deep Packet Inspection (DPI) systems that some ISPs use for censorship. It was developed and tested primarily against **Turkish ISP DPI**, but the techniques apply to any DPI that inspects HTTP `Host` headers or TLS SNI without full stream reassembly.
 
-It runs as a hardened `systemd` service under a dedicated, non-root user with only `CAP_NET_ADMIN` and `CAP_NET_RAW`.
+It runs as a hardened `systemd` service under a dedicated, non-root user, granted only `CAP_NET_ADMIN` and `CAP_NET_RAW` — and it gives up `CAP_NET_RAW` once its sockets are open.
 
 > **Scope, honestly stated.** CachyDPI is a *client-side* tool. It works against passive DPI (forged RST / redirect / TLS-alert injection) and SNI/Host-based blocking where the DPI does not reassemble the TCP stream. It **cannot** defeat inline DPI that fully reassembles streams, server-side RST injection, IP-level blocking, or DNS poisoning. See [Limitations](#limitations).
 
@@ -352,7 +352,7 @@ System-level test scripts (require root and a live network) live under `tests/` 
 
 ## Security
 
-The daemon runs as the dedicated, non-root `cachydpi` user with only `CAP_NET_ADMIN` + `CAP_NET_RAW`, behind a systemd unit with extensive hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`, capability bounding, namespace/syscall restrictions) and resource limits (`MemoryMax=64M`, `CPUQuota=25%`). It refuses to continue if it cannot drop excess capabilities. Verify the score yourself with `systemd-analyze security cachydpi`.
+The daemon runs as the dedicated, non-root `cachydpi` user, granted only `CAP_NET_ADMIN` + `CAP_NET_RAW` and keeping just `CAP_NET_ADMIN` after startup, behind a systemd unit with extensive hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`, capability bounding, namespace/syscall restrictions) and resource limits (`MemoryMax=64M`, `CPUQuota=25%`). It refuses to continue if it cannot drop excess capabilities. Verify the score yourself with `systemd-analyze security cachydpi`.
 
 Full threat model, privilege model, and vulnerability-reporting process: **[SECURITY.md](SECURITY.md)**.
 

@@ -54,14 +54,20 @@ CachyDPI requires exactly **two** Linux capabilities and nothing else (`src/priv
 
 At startup the daemon **verifies** these are present (`check_capabilities`) and otherwise exits with guidance (`setcap cap_net_admin,cap_net_raw=eip cachydpi`). After it has installed the nftables rules and opened the queues, it reduces privilege:
 
+Only `CAP_NET_ADMIN` is kept afterwards. `CAP_NET_RAW` is needed to *open* the raw sockets, and an open descriptor keeps working without it, so it is given up for the rest of the process lifetime; `CAP_NET_ADMIN` has to stay because teardown shells out to `nft`.
+
 | Situation | Behaviour (`drop_root`) |
 |-----------|-------------------------|
-| Already running as the `cachydpi` user | Drop every capability except `NET_ADMIN` + `NET_RAW` |
-| Running as root under `NoNewPrivileges` (systemd) | `setuid` is blocked, so it drops capabilities only and logs a notice |
-| Running as root manually, `cachydpi` user exists | `PR_SET_KEEPCAPS` → `setgroups([])` → `setgid` → `setuid(cachydpi)` → restore only the two caps → clear keepcaps → assert no longer root |
-| Running as root, `cachydpi` user missing | Continue as root with only the two caps, log a warning |
+| Already running as the `cachydpi` user (**how the systemd unit runs**) | Drop every capability except `CAP_NET_ADMIN` |
+| Running as root under `NoNewPrivileges` | `setuid` is blocked, so it drops capabilities only and logs a notice |
+| Running as root manually, `cachydpi` user exists | `PR_SET_KEEPCAPS` → `setgroups([])` → `setgid` → `setuid(cachydpi)` → restore `CAP_NET_ADMIN` to effective/permitted/inheritable → raise it into the **ambient** set → clear keepcaps → verify the result |
+| Running as root, `cachydpi` user missing | Continue as root with `CAP_NET_ADMIN` only, log a warning |
 
-**If dropping unnecessary capabilities fails, the process aborts** — it will not continue with excess privilege (`main.rs`: the `drop_unnecessary_caps()` error is fatal).
+The ambient raise is what makes the child `nft` process actually receive `CAP_NET_ADMIN`; the inheritable set alone grants a non-root child nothing, so without it teardown fails silently. `verify_dropped_state` then confirms the process is no longer root, holds `CAP_NET_ADMIN` in both the effective and ambient sets, and no longer holds `CAP_NET_RAW` — the daemon refuses to run on in an unclear privilege state rather than reporting a successful drop it cannot back up.
+
+**If dropping privileges fails, the process aborts** — it will not continue with excess privilege (`main.rs`: the `drop_root()` error is fatal).
+
+`preflight_drop_root` rehearses the whole transition in a forked child *before* any nftables rule is installed, so a uid that cannot be switched to is found while there is still nothing to clean up. Note that this only applies to the manual-root path: under the systemd unit the process starts as `User=cachydpi` already, so no `setuid` happens and the rehearsal does not run.
 
 Under systemd this is reinforced from outside the process (`systemd/cachydpi.service`):
 
