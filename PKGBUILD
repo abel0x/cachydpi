@@ -2,7 +2,7 @@
 # CachyDPI — System-wide DPI bypass tool for Linux
 
 pkgname=cachydpi
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="System-wide DPI bypass tool for Linux — GoodbyeDPI alternative"
 arch=('x86_64' 'aarch64')
@@ -19,6 +19,7 @@ makedepends=(
     'cargo'
     'pkg-config'
 )
+install="$pkgname.install"
 backup=('etc/cachydpi/config.toml' 'etc/cachydpi/blacklist.txt')
 source=("$pkgname-$pkgver.tar.gz")
 sha256sums=('SKIP')
@@ -76,33 +77,5 @@ package() {
     # backup= file and is never replaced, so recovering from a damaged one
     # needs a reference copy to restore from (see Troubleshooting in README).
     install -Dm644 "config/config.toml" "$pkgdir/usr/share/doc/$pkgname/config.toml"
-}
-
-post_install() {
-    systemd-sysusers cachydpi.conf
-    systemd-tmpfiles --create cachydpi.conf
-
-    echo ""
-    echo ">>> CachyDPI installed!"
-    echo ">>> Start with: sudo systemctl enable --now cachydpi"
-    echo ">>> Status: sudo systemctl status cachydpi"
-    echo ">>> Configuration: /etc/cachydpi/config.toml"
-    echo ""
-}
-
-post_upgrade() {
-    systemd-sysusers cachydpi.conf
-    systemd-tmpfiles --create cachydpi.conf
-
-    echo ""
-    echo ">>> CachyDPI updated. Restart the service:"
-    echo ">>> sudo systemctl restart cachydpi"
-    echo ""
-}
-
-pre_remove() {
-    systemctl stop cachydpi 2>/dev/null || true
-    systemctl disable cachydpi 2>/dev/null || true
-    # Remove nftables rules
-    /usr/bin/cachydpi remove-rules 2>/dev/null || true
+    install -Dm644 "CHANGELOG.md" "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
 }

@@ -28,6 +28,14 @@ else
     echo "  installed $CONFIG_DEST"
 fi
 
+# Reference copy for recovery — the config above is never replaced, so a
+# damaged one needs a pristine version to restore from. Skipped when
+# deploying into a sandbox.
+if [[ -z "${CACHYDPI_CONFIG_DEST:-}" ]]; then
+    install -Dm644 "$SCRIPT_DIR/config/config.toml" /usr/share/doc/cachydpi/config.toml
+    install -Dm644 "$SCRIPT_DIR/CHANGELOG.md" /usr/share/doc/cachydpi/CHANGELOG.md
+fi
+
 echo "Restarting service..."
 systemctl daemon-reload
 systemctl restart cachydpi

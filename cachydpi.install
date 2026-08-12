@@ -1,0 +1,50 @@
+post_install() {
+    systemd-sysusers cachydpi.conf
+    systemd-tmpfiles --create cachydpi.conf
+
+    echo ""
+    echo ">>> CachyDPI installed!"
+    echo ">>> Start with: sudo systemctl enable --now cachydpi"
+    echo ">>> Status: sudo systemctl status cachydpi"
+    echo ">>> Configuration: /etc/cachydpi/config.toml"
+    echo ""
+}
+
+post_upgrade() {
+    systemd-sysusers cachydpi.conf
+    systemd-tmpfiles --create cachydpi.conf
+
+    echo ""
+    echo ">>> CachyDPI updated. Restart the service:"
+    echo ">>>   sudo systemctl restart cachydpi"
+
+    # 1.1.0 tightened the config format. /etc/cachydpi/config.toml is a
+    # backup= file and is deliberately never replaced, so a config written
+    # for 1.0.x is left exactly as it was — which means an older one can now
+    # stop the daemon from starting. Say so here, because the alternative is
+    # the operator discovering it when their internet goes away.
+    if (( $(vercmp "$2" 1.1.0) < 0 )); then
+        echo ""
+        echo ">>> BREAKING CHANGE in 1.1.0 — check /etc/cachydpi/config.toml"
+        echo ">>>"
+        echo ">>>   * The [domains] section is now REQUIRED and must state a mode."
+        echo ">>>     A config without it will not start."
+        echo ">>>   * \"whitelist\" is renamed to \"exempt\" (it exempts domains from"
+        echo ">>>     the bypass; it never meant \"only these\"). The old spelling"
+        echo ">>>     still works for this release and warns."
+        echo ">>>   * mode = \"exempt\" with an empty list is now refused: it would"
+        echo ">>>     bypass every site, which is what mode = \"none\" is for."
+        echo ">>>"
+        echo ">>> Verify before restarting:  sudo cachydpi --dry-run"
+        echo ">>> Reference config:          /usr/share/doc/cachydpi/config.toml"
+        echo ">>> Details:                   /usr/share/doc/cachydpi/CHANGELOG.md"
+    fi
+    echo ""
+}
+
+pre_remove() {
+    systemctl stop cachydpi 2>/dev/null || true
+    systemctl disable cachydpi 2>/dev/null || true
+    # Remove nftables rules
+    /usr/bin/cachydpi remove-rules 2>/dev/null || true
+}

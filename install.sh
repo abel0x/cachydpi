@@ -98,6 +98,14 @@ else
     warn "Blacklist already exists, not overwritten"
 fi
 
+# ── Reference copies for recovery ──
+# The files under /etc are never overwritten, so a damaged config needs a
+# pristine copy to restore from (referenced by the README and by the errors
+# the daemon prints when it refuses to start).
+install -Dm644 "config/config.toml" "/usr/share/doc/cachydpi/config.toml"
+install -Dm644 "CHANGELOG.md" "/usr/share/doc/cachydpi/CHANGELOG.md"
+ok "Reference config: /usr/share/doc/cachydpi/config.toml"
+
 # ── Install systemd files ──
 install -Dm644 "systemd/cachydpi.service" "/usr/lib/systemd/system/cachydpi.service"
 install -Dm644 "systemd/cachydpi.sysusers" "/usr/lib/sysusers.d/cachydpi.conf"

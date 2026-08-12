@@ -42,8 +42,23 @@ check:
 # Install to system (run 'make release' first, then 'sudo make install')
 install:
 	$(INSTALL) -Dm755 target/release/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
-	$(INSTALL) -Dm644 config/config.toml $(DESTDIR)$(SYSCONFDIR)/cachydpi/config.toml
-	$(INSTALL) -Dm644 config/blacklist.txt $(DESTDIR)$(SYSCONFDIR)/cachydpi/blacklist.txt
+	@# Never replace a config already in place: it holds operator choices and
+	@# an upgrade that resets them changes behaviour without failing loudly.
+	@if [ -e $(DESTDIR)$(SYSCONFDIR)/cachydpi/config.toml ]; then \
+		echo "config.toml exists, not overwritten"; \
+	else \
+		$(INSTALL) -Dm644 config/config.toml $(DESTDIR)$(SYSCONFDIR)/cachydpi/config.toml; \
+	fi
+	@if [ -e $(DESTDIR)$(SYSCONFDIR)/cachydpi/blacklist.txt ]; then \
+		echo "blacklist.txt exists, not overwritten"; \
+	else \
+		$(INSTALL) -Dm644 config/blacklist.txt $(DESTDIR)$(SYSCONFDIR)/cachydpi/blacklist.txt; \
+	fi
+	@# Reference copies for recovery — the files under $(SYSCONFDIR) are never
+	@# replaced, so a damaged one needs something to restore from.
+	$(INSTALL) -Dm644 config/config.toml $(DESTDIR)$(PREFIX)/share/doc/cachydpi/config.toml
+	$(INSTALL) -Dm644 CHANGELOG.md $(DESTDIR)$(PREFIX)/share/doc/cachydpi/CHANGELOG.md
+	$(INSTALL) -Dm644 README.md $(DESTDIR)$(PREFIX)/share/doc/cachydpi/README.md
 	$(INSTALL) -Dm644 systemd/cachydpi.service $(DESTDIR)$(PREFIX)/lib/systemd/system/cachydpi.service
 	$(INSTALL) -Dm644 systemd/cachydpi.sysusers $(DESTDIR)$(PREFIX)/lib/sysusers.d/cachydpi.conf
 	$(INSTALL) -Dm644 systemd/cachydpi.tmpfiles $(DESTDIR)$(PREFIX)/lib/tmpfiles.d/cachydpi.conf
