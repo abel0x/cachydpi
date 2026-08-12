@@ -322,6 +322,35 @@ mod tests {
         );
     }
 
+    /// The Drop path is what cleans up when startup fails after the rules are
+    /// installed — main returning Err drops the NftRules value. It therefore
+    /// only ever runs on the error path and would otherwise never be exercised,
+    /// which is how a broken cleanup would stay invisible until the day it
+    /// matters and leaves a live ruleset behind.
+    #[test]
+    fn dropping_installed_rules_cleans_them_up() {
+        let _guard = NFT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if !nft_writable() {
+            return;
+        }
+
+        {
+            let mut rules = NftRules::new(200, true);
+            rules.install().expect("install should succeed");
+            assert!(
+                ruleset_dump().contains(NFT_TABLE),
+                "rules should be present before the value is dropped"
+            );
+            // Falling out of scope here stands in for main returning Err.
+        }
+
+        let after = ruleset_dump();
+        assert!(
+            !after.contains(NFT_TABLE),
+            "dropping installed rules must remove them, got:\n{after}"
+        );
+    }
+
     /// Acceptance criterion end to end: start(ipv6) → stop → start(no ipv6) →
     /// stop leaves nothing behind, and teardown on an already-clean system
     /// still succeeds (so start does not log a spurious nft error).

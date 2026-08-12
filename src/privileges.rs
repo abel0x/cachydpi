@@ -81,7 +81,84 @@ pub fn preflight_drop_root() -> Result<()> {
         }
     }
 
+    // Checking the preconditions is not the same as checking the operation.
+    // A uid that is not mapped into the current user namespace passes every
+    // test above and still fails at setuid — after the rules are installed,
+    // which is precisely the point of no return this gate exists to stay ahead
+    // of. So rehearse the whole transition in a child process.
+    let user = nix::unistd::User::from_name("cachydpi")
+        .context("failed to lookup cachydpi user")?
+        .expect("presence checked above");
+    if !rehearse_privilege_drop(&user)? {
+        bail!(
+            "switching to the cachydpi user (uid {}) is not possible here — the uid is \
+             most likely not mapped into this user namespace",
+            user.uid.as_raw()
+        );
+    }
+
     debug!("privilege drop preflight passed (setuid to cachydpi is viable)");
+    Ok(())
+}
+
+/// Perform the privilege drop in a throwaway child and report whether it worked.
+///
+/// The drop is irreversible, so it cannot be tried in the daemon itself, and
+/// reading uid_map or securebits only tells us about the preconditions. Forking
+/// exercises the real syscalls — setgid, setuid and the ambient raise — while
+/// the parent is still able to abort cleanly.
+///
+/// Safe to fork here: preflight runs before any thread is spawned.
+fn rehearse_privilege_drop(user: &nix::unistd::User) -> Result<bool> {
+    match unsafe { nix::unistd::fork() } {
+        Ok(nix::unistd::ForkResult::Child) => {
+            let ok = unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) } == 0
+                && nix::unistd::setgroups(&[]).is_ok()
+                && nix::unistd::setgid(user.gid).is_ok()
+                && nix::unistd::setuid(user.uid).is_ok()
+                && raise_retained_caps().is_ok();
+            // _exit, not exit: this child must not run atexit handlers or
+            // flush the parent's buffers.
+            unsafe { libc::_exit(i32::from(!ok)) }
+        }
+        Ok(nix::unistd::ForkResult::Parent { child }) => {
+            match nix::sys::wait::waitpid(child, None) {
+                Ok(nix::sys::wait::WaitStatus::Exited(_, 0)) => Ok(true),
+                Ok(_) => Ok(false),
+                Err(e) => bail!("could not wait for the privilege drop rehearsal: {e}"),
+            }
+        }
+        Err(e) => bail!("could not fork to rehearse the privilege drop: {e}"),
+    }
+}
+
+/// Restore the retained capabilities after a uid change and make them ambient.
+///
+/// Shared by the real drop and its rehearsal so the two cannot drift: a
+/// rehearsal that tested a different sequence would be worth very little.
+fn raise_retained_caps() -> Result<()> {
+    let retained: std::collections::HashSet<caps::Capability> =
+        RETAINED_CAPS.iter().copied().collect();
+
+    // KEEPCAPS carried the *permitted* set across the uid change, but the
+    // kernel clears the *effective* set whenever the euid changes, so it has to
+    // be raised again by hand. That order is not optional: ambient raise
+    // requires the capability to be present in both permitted and inheritable
+    // at the time of the call.
+    caps::set(None, caps::CapSet::Effective, &retained)
+        .context("failed to restore effective capabilities after setuid")?;
+    caps::set(None, caps::CapSet::Permitted, &retained)
+        .context("failed to restore permitted capabilities after setuid")?;
+    caps::set(None, caps::CapSet::Inheritable, &retained)
+        .context("failed to set inheritable capabilities")?;
+
+    // Only the ambient set survives execve for a non-root process. The
+    // inheritable set alone would leave the `nft` child with nothing, which is
+    // how teardown used to fail silently.
+    for &cap in RETAINED_CAPS {
+        caps::raise(None, caps::CapSet::Ambient, cap)
+            .with_context(|| format!("failed to raise {cap:?} into the ambient set"))?;
+    }
     Ok(())
 }
 
@@ -212,27 +289,8 @@ pub fn drop_root() -> Result<()> {
             nix::unistd::setgid(user.gid).context("failed to setgid to cachydpi")?;
             nix::unistd::setuid(user.uid).context("failed to setuid to cachydpi")?;
 
-            // KEEPCAPS carried the *permitted* set across the uid change, but
-            // the kernel clears the *effective* set whenever the euid changes,
-            // so it has to be raised again by hand. That order is not optional:
-            // ambient raise requires the capability to be present in both
-            // permitted and inheritable at the time of the call.
-            let retained: std::collections::HashSet<caps::Capability> =
-                RETAINED_CAPS.iter().copied().collect();
-            caps::set(None, caps::CapSet::Effective, &retained)
-                .context("failed to restore effective capabilities after setuid")?;
-            caps::set(None, caps::CapSet::Permitted, &retained)
-                .context("failed to restore permitted capabilities after setuid")?;
-            caps::set(None, caps::CapSet::Inheritable, &retained)
-                .context("failed to set inheritable capabilities")?;
-
-            // Only the ambient set survives execve for a non-root process. The
-            // inheritable set alone would leave the `nft` child with nothing,
-            // which is how teardown used to fail silently.
-            for &cap in RETAINED_CAPS {
-                caps::raise(None, caps::CapSet::Ambient, cap)
-                    .with_context(|| format!("failed to raise {cap:?} into the ambient set"))?;
-            }
+            // Same sequence the preflight rehearsed, deliberately shared.
+            raise_retained_caps()?;
 
             // Disable keepcaps now that we're done
             unsafe {
