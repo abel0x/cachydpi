@@ -100,7 +100,9 @@ fn main() -> Result<()> {
         config.general.mode,
         &cli.config.display().to_string(),
         &config.domains.mode.to_string(),
-        config.domain_set.len(),
+        // None when the mode consults no list at all, so a watcher can tell
+        // that apart from a list that loaded nothing.
+        config.active_domain_list_size(),
     );
 
     // Check prerequisites

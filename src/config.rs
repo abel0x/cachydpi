@@ -563,6 +563,19 @@ impl Config {
         Ok(())
     }
 
+    /// Number of domains in the list that is actually in effect, or `None` when
+    /// no list applies — either because the bypass mode never consults one, or
+    /// because the domain mode is `none`.
+    ///
+    /// The distinction matters to anything watching the metrics: reporting 0 for
+    /// "no list is used" is indistinguishable from "the list failed to load".
+    pub fn active_domain_list_size(&self) -> Option<usize> {
+        if !self.domain_filter_is_used() || matches!(self.domains.mode, DomainMode::None) {
+            return None;
+        }
+        Some(self.domain_set.len())
+    }
+
     /// Whether the configured bypass mode ever consults the domain filter.
     ///
     /// Mode 1 is passive-only: outbound packets are accepted whatever the list
@@ -944,6 +957,42 @@ mod load_tests {
         config.load_domain_lists().unwrap();
         assert!(!config.should_process_domain("safe.com"));
         assert!(config.should_process_domain("other.com"));
+    }
+
+    /// A mode that consults no list must report "no list", not "a list with
+    /// nothing in it" — a watcher cannot tell the second from a failed load.
+    #[test]
+    fn no_list_in_use_is_distinguishable_from_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // mode = "none": no list is consulted at all.
+        let none = dir.path().join("none.toml");
+        fs::write(&none, "[domains]\nmode = \"none\"\n").unwrap();
+        let mut config = Config::load(&none).unwrap();
+        config.load_domain_lists().unwrap();
+        assert_eq!(config.active_domain_list_size(), None);
+
+        // Passive-only mode never reaches the filter either.
+        let passive = dir.path().join("passive.toml");
+        fs::write(
+            &passive,
+            "[general]\nmode = 1\n\n[domains]\nmode = \"blacklist\"\n",
+        )
+        .unwrap();
+        let mut config = Config::load(&passive).unwrap();
+        config.load_domain_lists().unwrap();
+        assert_eq!(config.active_domain_list_size(), None);
+
+        // A list that is actually in effect reports its size.
+        let listed = dir.path().join("listed.toml");
+        fs::write(
+            &listed,
+            "[domains]\nmode = \"blacklist\"\nblacklist = [\"a.com\", \"b.com\"]\n",
+        )
+        .unwrap();
+        let mut config = Config::load(&listed).unwrap();
+        config.load_domain_lists().unwrap();
+        assert_eq!(config.active_domain_list_size(), Some(2));
     }
 
     /// The escape hatch still works: god mode remains reachable, but only when

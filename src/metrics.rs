@@ -21,6 +21,9 @@ pub const DEFAULT_METRICS_SOCKET: &str = "/run/cachydpi/metrics.sock";
 /// Fallback socket path when /run/cachydpi doesn't exist
 pub const FALLBACK_METRICS_SOCKET: &str = "/tmp/cachydpi-metrics.sock";
 
+/// Sentinel meaning "the configured mode does not consult a domain list".
+const NO_DOMAIN_LIST: u64 = u64::MAX;
+
 /// Ratio helper for the snapshot: 0.0 rather than NaN when nothing happened.
 fn ratio(numerator: u64, denominator: u64) -> f64 {
     if denominator == 0 {
@@ -43,6 +46,9 @@ pub struct Metrics {
     pub mode: AtomicU8,
     config_file: OnceLock<String>,
     domain_mode: OnceLock<String>,
+    /// Domains in the active list. `u64::MAX` is the sentinel for "the mode
+    /// does not use a list", which the snapshot turns back into `None` —
+    /// an atomic cannot hold an Option and the value is written once at startup.
     pub domains_loaded: AtomicU64,
 
     // ── Outbound packet counters ──
@@ -156,13 +162,17 @@ impl Metrics {
     }
 
     /// Initialize metrics at daemon startup.
-    pub fn init(&self, mode: u8, config_file: &str, domain_mode: &str, domain_count: usize) {
+    ///
+    /// `domain_count` is `None` when the configured mode does not consult a
+    /// list, which is not the same as a list that loaded zero domains.
+    pub fn init(&self, mode: u8, config_file: &str, domain_mode: &str, domain_count: Option<usize>) {
         self.start_epoch_ms.store(epoch_ms(), Relaxed);
         self.pid.store(std::process::id() as u64, Relaxed);
         self.mode.store(mode, Relaxed);
         let _ = self.config_file.set(config_file.to_string());
         let _ = self.domain_mode.set(domain_mode.to_string());
-        self.domains_loaded.store(domain_count as u64, Relaxed);
+        self.domains_loaded
+            .store(domain_count.map_or(NO_DOMAIN_LIST, |c| c as u64), Relaxed);
     }
 
     /// Push a notable event into the ring buffer.
@@ -208,7 +218,10 @@ impl Metrics {
                 mode_name: mode_name(self.mode.load(Relaxed)),
                 config_file: self.config_file.get().cloned().unwrap_or_default(),
                 domain_mode: self.domain_mode.get().cloned().unwrap_or_default(),
-                domains_loaded: self.domains_loaded.load(Relaxed),
+                domains_loaded: match self.domains_loaded.load(Relaxed) {
+                    NO_DOMAIN_LIST => None,
+                    count => Some(count),
+                },
             },
             resources,
             outbound: OutboundSnapshot {
@@ -282,7 +295,12 @@ pub struct ServiceSnapshot {
     pub mode_name: String,
     pub config_file: String,
     pub domain_mode: String,
-    pub domains_loaded: u64,
+    /// Domains in the active filter list, or `null` when the configured mode
+    /// does not consult one.
+    ///
+    /// Reporting 0 for both cases reads as "the list failed to load" to
+    /// anything watching this, when the truth is that no list applies.
+    pub domains_loaded: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
