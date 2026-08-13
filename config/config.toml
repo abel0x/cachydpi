@@ -120,6 +120,16 @@ exempt = []
 
 [logging]
 # Log level: "error", "warn", "info", "debug", "trace"
+#
+# "info" is the level to run at. Above it the daemon logs per-connection
+# detail — one line per intercepted packet at "debug", plus per-fragment
+# detail at "trace" — which is useful while diagnosing a problem and costly
+# to leave on: it is the bulk of the journal, and journald rotates
+# oldest-first across all units, so it shortens the system's whole history.
+#
+# The level does NOT by itself record where you connect. Domains, SNIs and
+# peer addresses stay redacted at every level unless log_identifying_fields
+# below is turned on.
 level = "info"
 
 # Log to journald
