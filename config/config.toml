@@ -128,6 +128,16 @@ journald = true
 # Log to file (optional)
 # file = "/var/log/cachydpi/cachydpi.log"
 
+# Log the values that say WHERE you connect: the domain or SNI of each
+# processed connection, and peer addresses.
+#
+# PRIVACY: off by default and independent of the log level, so raising the
+# level to debug a problem never starts recording browsing history. With it
+# off the fields are still logged, carrying "<redacted>". On a persistent
+# journal, turning it on leaves a lasting record of every site visited.
+# Turn on only while debugging domain filtering, and turn it off again.
+# log_identifying_fields = false
+
 # Write intercepted packet contents to the log (TRACE level).
 #
 # PRIVACY: the dump contains the TLS ClientHello, so it records the SNI of

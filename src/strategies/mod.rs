@@ -243,10 +243,10 @@ impl StrategyEngine {
             METRICS.forged_rst_drops.fetch_add(1, Ordering::Relaxed);
             METRICS.push_event(
                 EventLevel::Warning,
-                format!("forged RST from {}", packet.src_addr()),
+                format!("forged RST from {}", crate::logging::peer(packet.src_addr())),
             );
             debug!(
-                src = %packet.src_addr(),
+                src = %crate::logging::peer(packet.src_addr()),
                 "dropping forged RST packet from DPI"
             );
             return PacketAction::Drop;
@@ -260,10 +260,10 @@ impl StrategyEngine {
                     .fetch_add(1, Ordering::Relaxed);
                 METRICS.push_event(
                     EventLevel::Warning,
-                    format!("forged redirect from {}", packet.src_addr()),
+                    format!("forged redirect from {}", crate::logging::peer(packet.src_addr())),
                 );
                 debug!(
-                    src = %packet.src_addr(),
+                    src = %crate::logging::peer(packet.src_addr()),
                     "dropping forged HTTP redirect from DPI"
                 );
                 return PacketAction::Drop;
@@ -276,10 +276,10 @@ impl StrategyEngine {
                 METRICS.forged_alert_drops.fetch_add(1, Ordering::Relaxed);
                 METRICS.push_event(
                     EventLevel::Warning,
-                    format!("forged TLS alert from {}", packet.src_addr()),
+                    format!("forged TLS alert from {}", crate::logging::peer(packet.src_addr())),
                 );
                 debug!(
-                    src = %packet.src_addr(),
+                    src = %crate::logging::peer(packet.src_addr()),
                     "dropping forged TLS alert from DPI"
                 );
                 return PacketAction::Drop;
@@ -335,14 +335,19 @@ impl StrategyEngine {
                 self.auto_ttl.store(fake_ttl, Ordering::Relaxed);
                 METRICS.push_event(
                     EventLevel::Info,
-                    format!("auto-TTL {} for {} (hops={})", fake_ttl, src_ip, hops),
+                    format!(
+                        "auto-TTL {} for {} (hops={})",
+                        fake_ttl,
+                        crate::logging::peer(src_ip),
+                        hops
+                    ),
                 );
                 info!(
                     recv_ttl = recv_ttl,
                     initial_ttl = initial_ttl,
                     hops = hops,
                     fake_ttl = fake_ttl,
-                    src = %src_ip,
+                    src = %crate::logging::peer(src_ip),
                     "auto-TTL detected from SYN-ACK"
                 );
             } else {
@@ -350,7 +355,7 @@ impl StrategyEngine {
                     recv_ttl = recv_ttl,
                     hops = hops,
                     fake_ttl = fake_ttl,
-                    src = %src_ip,
+                    src = %crate::logging::peer(src_ip),
                     "per-destination TTL cached"
                 );
             }
@@ -373,7 +378,7 @@ impl StrategyEngine {
             if !self.config.should_process_domain(host) {
                 METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
                 debug!(
-                    domain = host.as_str(),
+                    domain = %crate::logging::peer(host.as_str()),
                     "HTTP domain not in filter list, skipping"
                 );
                 return PacketAction::Accept;
@@ -470,12 +475,15 @@ impl StrategyEngine {
                 if let Some(ref sni) = hello.sni {
                     if !self.config.should_process_domain(sni) {
                         METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
-                        debug!(domain = sni.as_str(), "domain not in filter list, skipping");
+                        debug!(
+                            domain = %crate::logging::peer(sni.as_str()),
+                            "domain not in filter list, skipping"
+                        );
                         return PacketAction::Accept;
                     }
                     METRICS.domains_matched.fetch_add(1, Ordering::Relaxed);
                     debug!(
-                        domain = sni.as_str(),
+                        domain = %crate::logging::peer(sni.as_str()),
                         "domain matched, applying TLS strategy"
                     );
                 }
@@ -900,8 +908,8 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
     if let Some(tcp) = parsed.tcp() {
         trace!(
             id = packet_id,
-            src = %parsed.src_addr(),
-            dst = %parsed.dst_addr(),
+            src = %crate::logging::peer(parsed.src_addr()),
+            dst = %crate::logging::peer(parsed.dst_addr()),
             sport = tcp.src_port,
             dport = tcp.dst_port,
             flags = tcp.flags,
@@ -931,8 +939,8 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
             debug!(
                 id = packet_id,
                 action = %other.summary(),
-                src = %parsed.src_addr(),
-                dst = %parsed.dst_addr(),
+                src = %crate::logging::peer(parsed.src_addr()),
+                dst = %crate::logging::peer(parsed.dst_addr()),
                 "strategy applied"
             );
             // The bytes themselves stay behind a second, explicit switch, so

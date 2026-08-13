@@ -4,6 +4,8 @@
 //
 // Sets up tracing/logging to journald and/or file output.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -11,8 +13,99 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::LogConfig;
 
+/// Whether values that reveal where the user is connecting may be logged.
+///
+/// A process-wide switch rather than a parameter because the fields are emitted
+/// from places that have no access to the config — the raw socket and the
+/// splitting routines take packets, not settings — and the policy is a property
+/// of the run, not of a call site.
+static LOG_IDENTIFYING_FIELDS: AtomicBool = AtomicBool::new(false);
+
+/// Written in place of an identifying value when logging it is not allowed.
+pub const REDACTED: &str = "<redacted>";
+
+/// A value that is only shown when identifying fields may be logged.
+pub enum Redactable<T> {
+    Shown(T),
+    Hidden,
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for Redactable<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Redactable::Shown(value) => value.fmt(f),
+            Redactable::Hidden => f.write_str(REDACTED),
+        }
+    }
+}
+
+/// Wrap a value that says where the user is connecting — a domain, an SNI, a
+/// peer address.
+///
+/// The field keeps its place in the event either way, so a log consumer sees a
+/// consistent shape and an operator can tell the value was withheld rather than
+/// wondering why the field vanished.
+pub fn peer<T>(value: T) -> Redactable<T> {
+    if LOG_IDENTIFYING_FIELDS.load(Ordering::Relaxed) {
+        Redactable::Shown(value)
+    } else {
+        Redactable::Hidden
+    }
+}
+
+/// Enable or disable identifying fields for the rest of the run.
+pub fn set_identifying_fields(enabled: bool) {
+    LOG_IDENTIFYING_FIELDS.store(enabled, Ordering::Relaxed);
+}
+
+/// Say out loud that this run is recording sensitive data.
+///
+/// Both switches are meant to be turned on briefly while debugging, and the
+/// failure mode is leaving one on: nothing else in the log would reveal that
+/// browsing data is being written. Call once logging is up.
+pub fn warn_about_sensitive_logging(config: &LogConfig) {
+    if config.log_identifying_fields {
+        tracing::warn!(
+            "[logging] log_identifying_fields is ON — the domain or SNI of every \
+             processed connection and its peer addresses are being written to the log. \
+             On a persistent journal that is a lasting record of sites visited. Turn it \
+             off when done debugging"
+        );
+    }
+    if config.log_packet_bytes {
+        tracing::warn!(
+            "[logging] log_packet_bytes is ON — intercepted packet contents, including \
+             the TLS ClientHello, are being written to the log at TRACE level. Turn it \
+             off when done debugging"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The switch is what decides, not the log level: raising the level while
+    /// debugging must not start recording where the user connects.
+    #[test]
+    fn peer_values_are_withheld_unless_the_switch_is_on() {
+        set_identifying_fields(false);
+        assert_eq!(peer("example.com").to_string(), REDACTED);
+        assert_eq!(peer("2600:1901:0:5e8a::").to_string(), REDACTED);
+
+        set_identifying_fields(true);
+        assert_eq!(peer("example.com").to_string(), "example.com");
+
+        // Leave the process-wide default as it starts.
+        set_identifying_fields(false);
+        assert_eq!(peer("example.com").to_string(), REDACTED);
+    }
+}
+
 /// Initialize the logging subsystem based on config
 pub fn init(config: &LogConfig, verbose: u8) -> Result<()> {
+    set_identifying_fields(config.log_identifying_fields);
+
     let level_str = match verbose {
         0 => config.level.as_str(),
         1 => "debug",

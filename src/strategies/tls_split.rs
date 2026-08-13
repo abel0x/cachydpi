@@ -55,7 +55,7 @@ pub fn split_tls_client_hello(
     }
 
     trace!(
-        sni = ?hello.sni,
+        sni = %crate::logging::peer(hello.sni.as_deref().unwrap_or("-")),
         split_at = split_at,
         total = payload.len(),
         "splitting TLS ClientHello at SNI"
@@ -146,7 +146,7 @@ pub fn split_tls_out_of_order(
     );
 
     trace!(
-        sni = ?hello.sni,
+        sni = %crate::logging::peer(hello.sni.as_deref().unwrap_or("-")),
         "sending TLS fragments out-of-order (frag2 → frag1)"
     );
 
@@ -207,7 +207,7 @@ pub fn split_tls_record_layer(
         &payload[record_data_start + split_at_data..record_data_start + record_data_len];
 
     trace!(
-        sni = ?hello.sni,
+        sni = %crate::logging::peer(hello.sni.as_deref().unwrap_or("-")),
         split_at_data = split_at_data,
         first_len = first_data.len(),
         second_len = second_data.len(),
@@ -303,7 +303,7 @@ pub fn split_tls_multi_fragment(
     let headers = &raw_packet[..ip_hdr_len + tcp_hdr_len];
 
     trace!(
-        sni = ?hello.sni,
+        sni = %crate::logging::peer(hello.sni.as_deref().unwrap_or("-")),
         split1 = split1,
         split2 = split2,
         total = payload.len(),

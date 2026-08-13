@@ -164,6 +164,16 @@ pub struct LogConfig {
     pub journald: bool,
     /// Optional log file path
     pub file: Option<String>,
+    /// Log the values that say where the user is connecting: the domain or SNI
+    /// being processed, and peer addresses.
+    ///
+    /// Off by default and deliberately independent of the log level. Raising
+    /// the level is an ordinary troubleshooting step and must not have "starts
+    /// recording browsing history" as a side effect — on a persistent journal
+    /// those fields are a lasting record of every site visited. With this off
+    /// the fields are still emitted, carrying `<redacted>`, so the shape of the
+    /// log does not change.
+    pub log_identifying_fields: bool,
     /// Write intercepted packet contents to the log at TRACE level.
     ///
     /// Off by default and deliberately separate from the log level: the dump
@@ -227,6 +237,7 @@ impl Default for LogConfig {
             level: "info".to_string(),
             journald: true,
             file: None,
+            log_identifying_fields: false,
             log_packet_bytes: false,
         }
     }

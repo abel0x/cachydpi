@@ -368,7 +368,7 @@ impl RawSocket {
 
         match self.socket_v4.send_to(packet, &sock_addr) {
             Ok(n) => {
-                trace!(len = n, dst = %dst_ip, "sent raw IPv4 packet");
+                trace!(len = n, dst = %crate::logging::peer(dst_ip), "sent raw IPv4 packet");
                 Ok(Sent::confirmed())
             }
             Err(e) => {
@@ -406,7 +406,7 @@ impl RawSocket {
 
         match socket.send_to(packet, &sock_addr) {
             Ok(n) => {
-                trace!(len = n, dst = %dst_ip, "sent raw IPv6 packet");
+                trace!(len = n, dst = %crate::logging::peer(dst_ip), "sent raw IPv6 packet");
                 Ok(Sent::confirmed())
             }
             Err(e) => Err(e).context("raw socket sendto() (IPv6) failed"),

@@ -80,6 +80,10 @@ fn main() -> Result<()> {
     // loading it is what tells us how to log.
     config.log_deferred_notices(&cli.config);
 
+    // Both privacy switches are meant to be on only while debugging, and the
+    // failure mode is forgetting one. Nothing else in the log would say so.
+    cachydpi::logging::warn_about_sensitive_logging(&config.logging);
+
     // Mode 7 (auto-detect) is advertised but not wired to the dpi_detect engine:
     // it falls through to the same arm as mode 5. Say so out loud instead of
     // pretending runtime probing happens.
