@@ -21,6 +21,15 @@ pub const DEFAULT_METRICS_SOCKET: &str = "/run/cachydpi/metrics.sock";
 /// Fallback socket path when /run/cachydpi doesn't exist
 pub const FALLBACK_METRICS_SOCKET: &str = "/tmp/cachydpi-metrics.sock";
 
+/// Ratio helper for the snapshot: 0.0 rather than NaN when nothing happened.
+fn ratio(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
 /// Maximum recent events kept in ring buffer
 const MAX_RECENT_EVENTS: usize = 50;
 
@@ -57,6 +66,13 @@ pub struct Metrics {
 
     // ── Passive defense ──
     pub forged_rst_drops: AtomicU64,
+    /// How many *distinct* peers sent a forged RST.
+    ///
+    /// 45 resets from one host and 45 from 45 hosts mean very different
+    /// things, and the total alone cannot tell them apart. Only the count is
+    /// kept here; the set it is derived from lives in the strategy engine and
+    /// never leaves the process.
+    pub forged_rst_sources: AtomicU64,
     pub forged_alert_drops: AtomicU64,
     pub forged_redirect_drops: AtomicU64,
 
@@ -116,6 +132,7 @@ impl Metrics {
             window_mods: AtomicU64::new(0),
 
             forged_rst_drops: AtomicU64::new(0),
+            forged_rst_sources: AtomicU64::new(0),
             forged_alert_drops: AtomicU64::new(0),
             forged_redirect_drops: AtomicU64::new(0),
 
@@ -206,6 +223,11 @@ impl Metrics {
                 accepted: self.in_accepted.load(Relaxed),
                 dropped: self.in_dropped.load(Relaxed),
                 forged_rst: self.forged_rst_drops.load(Relaxed),
+                forged_rst_sources: self.forged_rst_sources.load(Relaxed),
+                forged_rst_per_tls_split: ratio(
+                    self.forged_rst_drops.load(Relaxed),
+                    self.tls_splits.load(Relaxed),
+                ),
                 forged_alert: self.forged_alert_drops.load(Relaxed),
                 forged_redirect: self.forged_redirect_drops.load(Relaxed),
             },
@@ -286,6 +308,12 @@ pub struct InboundSnapshot {
     pub accepted: u64,
     pub dropped: u64,
     pub forged_rst: u64,
+    /// Distinct peers that sent a forged RST — see Metrics::forged_rst_sources.
+    pub forged_rst_sources: u64,
+    /// Forged RSTs per TLS split: the share of handshakes the DPI still
+    /// reacted to after fragmentation. A tracked health signal rather than
+    /// something to work out by hand from two counters.
+    pub forged_rst_per_tls_split: f64,
     pub forged_alert: u64,
     pub forged_redirect: u64,
 }

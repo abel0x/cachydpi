@@ -75,6 +75,62 @@ fn identifying_fields_are_logged_only_through_the_redaction_helper() {
     );
 }
 
+/// The metrics snapshot goes to a world-readable socket, so it is an output
+/// surface in its own right. New effectiveness counters must describe traffic
+/// in aggregate — totals, distinct counts, ratios — and never carry a value
+/// that identifies a peer.
+#[test]
+fn the_metrics_snapshot_exposes_no_identifying_values() {
+    let metrics = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/metrics.rs"),
+    )
+    .unwrap();
+
+    // Counts, ratios and timestamps cannot hold an address; free text can, and
+    // that is exactly how peer addresses reached this socket before. So every
+    // textual field has to be a deliberate, listed decision rather than
+    // something that slipped in with a new counter.
+    const TEXT_FIELDS_REVIEWED_FOR_IDENTITY: &[&str] = &[
+        "version",      // crate version
+        "mode_name",    // "AllActive", …
+        "domain_mode",  // "none" / "blacklist" / "exempt" — the mode, not a domain
+        "config_file",  // path to the config
+        "message",      // event text; peers in it go through logging::peer()
+    ];
+
+    let mut offenders = Vec::new();
+    for (i, line) in metrics.lines().enumerate() {
+        let trimmed = line.trim();
+        // Struct fields only: they end in a comma. Anything else on a `pub`
+        // line — a function, a const — is not part of the serialized surface.
+        if !trimmed.ends_with(',') || trimmed.contains("fn ") {
+            continue;
+        }
+        let Some(decl) = trimmed.strip_prefix("pub ") else {
+            continue;
+        };
+        let Some((name, ty)) = decl.trim_end_matches(',').split_once(": ") else {
+            continue;
+        };
+        if !ty.contains("String") {
+            continue;
+        }
+        if TEXT_FIELDS_REVIEWED_FOR_IDENTITY.contains(&name) {
+            continue;
+        }
+        offenders.push(format!("metrics.rs:{}: {name}: {ty}", i + 1));
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "the metrics snapshot is served to any local process, so a textual field \
+         is where an address or domain would leak. Add it to \
+         TEXT_FIELDS_REVIEWED_FOR_IDENTITY once you have checked what it can \
+         contain:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
 /// The switch must default to off wherever it is declared, so an operator has
 /// to ask for browsing data rather than inherit it.
 #[test]
