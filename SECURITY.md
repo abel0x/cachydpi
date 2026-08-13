@@ -156,10 +156,39 @@ The metrics server and the `cachydpi-monitor` TUI contain no `unsafe` and need n
 | Protocol | JSON over a Unix stream socket |
 | Direction | One-way, daemon → monitor (read-only) |
 | Permissions | `0666` |
-| Exposed | aggregate counters (packets processed, fragments sent, passive drops), timestamps, PID, process CPU/RAM |
-| **Not** exposed | packet contents, IP addresses, domain names, config values |
+| Exposed | aggregate counters (packets processed, fragments sent, passive drops), timestamps, PID, process CPU/RAM, and the last 50 notable events |
+| **Not** exposed | packet contents, config values, and — unless `[logging] log_identifying_fields` is on — IP addresses and domain names |
 
 There is no control channel: the monitor can only read counters, never command the daemon. The directory is created by `RuntimeDirectory=cachydpi` and the socket is removed on shutdown / overwritten on restart.
+
+The socket is `0666` so `cachydpi monitor` needs no privileges, which means **everything in the snapshot is readable by any local process**. The recent-events buffer used to embed the source address of each DPI-forged packet, making this a second route to the same data the journal was recording; those messages now go through the same redaction as the log. Anything added to the snapshot has to stay safe to hand to an unprivileged process.
+
+---
+
+## Logging and privacy
+
+CachyDPI sees exactly what a DPI box sees: the domain in every HTTP `Host` header and TLS SNI, and both endpoints of every connection. Writing that to a log turns a tool built to keep browsing off the wire into one that records it on disk — and under systemd the journal is usually persistent, so the record outlives the session. Anyone who attaches a journal excerpt to a bug report ships it elsewhere.
+
+What is logged at each level:
+
+| Level | Content |
+|-------|---------|
+| `info` (default) | Startup, configuration summary, nftables and privilege transitions, errors |
+| `debug` | One line per intercepted packet: the strategy applied, fragment count and lengths, ports, payload sizes |
+| `trace` | Per-fragment detail: split points, TTL calculations, packet header fields |
+
+**The level never decides whether identifying values are recorded.** Raising it to diagnose a problem is routine and must not start capturing browsing history as a side effect, so two independent switches govern that:
+
+| Switch | Default | Effect when on |
+|--------|---------|----------------|
+| `[logging] log_identifying_fields` | `false` | Logs the domain/SNI of each processed connection and peer addresses. With it off these fields are still emitted, carrying `<redacted>`, so the log keeps a stable shape |
+| `[logging] log_packet_bytes` | `false` | Logs intercepted packet contents — including the TLS ClientHello — at `trace` |
+
+Both announce themselves with a `WARN` at startup, because the realistic failure is turning one on to debug something and forgetting it.
+
+Identifying values are never hashed. The SNI space is small and guessable, so a hash is reversible by dictionary in minutes: it would buy the appearance of protection and nothing else. A value is either logged or it is not.
+
+The same redaction covers the metrics socket, since the recent-events buffer is served to any local process (see [Metrics socket](#metrics-socket)).
 
 ---
 
