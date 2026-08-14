@@ -244,6 +244,63 @@ fn http_split_point_found_despite_binary_body() {
     );
 }
 
+/// The SNI syntax check is a probe on the parser: if the extension walk read
+/// the wrong offset, the extracted bytes would not look like a hostname. It has
+/// to accept unusual-but-legal names, or a long CDN hostname would be reported
+/// as a parser fault.
+#[test]
+fn sni_syntax_accepts_legal_hostnames_including_long_ones() {
+    for name in [
+        "example.com",
+        "fra02.dnscry.pt",
+        "a.co",
+        "xn--80ak6aa92e.com",            // punycode IDN
+        "sub.domain.with-hyphens.co.uk", // hyphens inside labels
+        // 96 characters — the median implied by the live fragment lengths, and
+        // legal, so it must not be counted as a parser fault.
+        "very-long-service-endpoint.region-name.provider-network.example-company-domain.com",
+    ] {
+        assert!(
+            tls::is_hostname_syntax(name),
+            "{name} is a legal hostname and must not read as a parser fault"
+        );
+    }
+
+    // 253 bytes is the limit, built from legal 63-byte labels.
+    let label = "a".repeat(63);
+    let at_limit = format!("{label}.{label}.{label}.{}", "a".repeat(61));
+    assert_eq!(at_limit.len(), 253);
+    assert!(tls::is_hostname_syntax(&at_limit));
+}
+
+#[test]
+fn sni_syntax_rejects_what_a_misread_offset_would_produce() {
+    let label = "a".repeat(63);
+    let over_limit = format!("{label}.{label}.{label}.{}", "a".repeat(62));
+    assert_eq!(over_limit.len(), 254);
+
+    for (name, why) in [
+        ("", "empty"),
+        ("nodot", "single label is not a hostname"),
+        (".leading.dot", "empty first label"),
+        ("trailing.dot.", "empty last label"),
+        ("double..dot", "empty middle label"),
+        ("has_underscore.com", "underscore is not legal in a hostname"),
+        ("has space.com", "space"),
+        ("binary\u{0}.com", "nul byte — random bytes read as a name"),
+        (over_limit.as_str(), "over 253 bytes"),
+    ] {
+        assert!(
+            !tls::is_hostname_syntax(name),
+            "{name:?} should be rejected ({why})"
+        );
+    }
+
+    // A label longer than 63 bytes, total still under 253.
+    let long_label = format!("{}.com", "a".repeat(64));
+    assert!(!tls::is_hostname_syntax(&long_label));
+}
+
 // ── Domain Filtering Tests ──
 
 #[test]

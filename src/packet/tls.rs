@@ -217,6 +217,37 @@ pub fn find_sni_split_point(tcp_payload: &[u8]) -> Option<(usize, usize)> {
     Some((split_at, split_at))
 }
 
+/// Whether an extracted SNI is syntactically a hostname.
+///
+/// This is a check on the *parser*, not on the peer. If the extension walk ever
+/// locked onto the wrong offset it would still produce a length and a byte
+/// range, and the resulting split points would cut somewhere harmless while the
+/// DPI still saw the name intact — a silent failure that looks like working
+/// fragmentation. Counting how often the extracted value is not a hostname
+/// turns that into something measurable without recording any name.
+///
+/// RFC 6066 requires the SNI to be a DNS hostname: ASCII letters, digits,
+/// hyphens and dots, at most 253 bytes, labels at most 63, no empty label (so
+/// no leading, trailing or doubled dot). The parser lowercases, so uppercase
+/// cannot appear here. Underscores are rejected deliberately — they are not
+/// legal in a hostname, and an SNI carrying one is exactly the sort of anomaly
+/// worth noticing.
+pub fn is_hostname_syntax(name: &str) -> bool {
+    if name.is_empty() || name.len() > 253 {
+        return false;
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+    {
+        return false;
+    }
+    // A hostname needs at least two labels, and every label must be non-empty
+    // and within 63 bytes.
+    let labels: Vec<&str> = name.split('.').collect();
+    labels.len() >= 2 && labels.iter().all(|l| !l.is_empty() && l.len() <= 63)
+}
+
 /// Check if a TCP payload starts with a TLS ClientHello
 pub fn is_tls_client_hello(data: &[u8]) -> bool {
     if data.len() < 6 {

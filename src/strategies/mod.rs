@@ -509,6 +509,12 @@ impl StrategyEngine {
 
                 // Check domain filter
                 if let Some(ref sni) = hello.sni {
+                    // Measure whether the parser is extracting hostnames at all.
+                    METRICS.sni_parsed.fetch_add(1, Ordering::Relaxed);
+                    if !packet::tls::is_hostname_syntax(sni) {
+                        METRICS.sni_syntax_invalid.fetch_add(1, Ordering::Relaxed);
+                    }
+
                     if !self.config.should_process_domain(sni) {
                         METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
                         debug!(

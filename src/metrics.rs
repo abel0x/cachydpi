@@ -87,6 +87,15 @@ pub struct Metrics {
     pub domains_skipped: AtomicU64,
 
     // ── Auto-TTL ──
+    /// TLS ClientHellos whose SNI the parser extracted.
+    pub sni_parsed: AtomicU64,
+    /// …of which the extracted value was not hostname syntax.
+    ///
+    /// A check on the parser rather than on the peer: a non-zero count means
+    /// the extension walk is reading the wrong offset for some layout, which
+    /// would put the split points somewhere harmless while the DPI still saw
+    /// the name whole. Counts only — no name is recorded.
+    pub sni_syntax_invalid: AtomicU64,
     pub ttl_detections: AtomicU64,
     pub ttl_cache_size: AtomicU64,
 
@@ -145,6 +154,8 @@ impl Metrics {
             domains_matched: AtomicU64::new(0),
             domains_skipped: AtomicU64::new(0),
 
+            sni_parsed: AtomicU64::new(0),
+            sni_syntax_invalid: AtomicU64::new(0),
             ttl_detections: AtomicU64::new(0),
             ttl_cache_size: AtomicU64::new(0),
 
@@ -252,6 +263,8 @@ impl Metrics {
                 window_mods: self.window_mods.load(Relaxed),
                 domains_matched: self.domains_matched.load(Relaxed),
                 domains_skipped: self.domains_skipped.load(Relaxed),
+                sni_parsed: self.sni_parsed.load(Relaxed),
+                sni_syntax_invalid: self.sni_syntax_invalid.load(Relaxed),
                 ttl_detections: self.ttl_detections.load(Relaxed),
                 ttl_cache_entries: self.ttl_cache_size.load(Relaxed),
             },
@@ -345,6 +358,8 @@ pub struct StrategySnapshot {
     pub window_mods: u64,
     pub domains_matched: u64,
     pub domains_skipped: u64,
+    pub sni_parsed: u64,
+    pub sni_syntax_invalid: u64,
     pub ttl_detections: u64,
     pub ttl_cache_entries: u64,
 }
