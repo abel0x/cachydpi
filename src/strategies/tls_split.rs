@@ -16,6 +16,49 @@ use crate::packet::tls::{self, TlsClientHello};
 
 use tracing::trace;
 
+/// Where the second cut falls, measured from the start of the SNI value.
+///
+/// Anywhere past the first split and inside the name works: the point of the
+/// third fragment is that the rest of the name arrives separately. Choosing it
+/// at random keeps the fragment lengths from being a fixed function of the SNI.
+/// Names too short to offer a choice keep the previous deterministic point.
+fn second_split_offset(sni_length: usize) -> usize {
+    const FIRST_CUT: usize = 2;
+    let lowest = FIRST_CUT + 1;
+    if sni_length <= lowest {
+        return ((sni_length * 2) / 3).max(4.min(sni_length));
+    }
+    lowest + jitter(sni_length - lowest)
+}
+
+/// A number in `0..range`, varying per packet and per process.
+///
+/// Deliberately not cryptographic: it only has to stop the split points being
+/// reproducible from the SNI, and it sits on the packet path. Seeded once from
+/// the platform's random state so two runs do not share a sequence.
+fn jitter(range: usize) -> usize {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static STATE: OnceLock<AtomicU64> = OnceLock::new();
+    let state = STATE.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u8(0);
+        // xorshift64 stalls on zero.
+        AtomicU64::new(h.finish() | 1)
+    });
+
+    // xorshift64: one atomic read-modify-write, no lock, no allocation.
+    let mut x = state.load(Ordering::Relaxed);
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    state.store(x, Ordering::Relaxed);
+
+    if range == 0 { 0 } else { (x % range as u64) as usize }
+}
+
 /// Split a TLS ClientHello packet at the SNI boundary.
 ///
 /// Returns None if:
@@ -284,10 +327,21 @@ pub fn split_tls_multi_fragment(
         return None;
     }
 
-    // Split point 1: 1-2 bytes into the SNI name (cut VERY early)
+    // Split point 1: 1-2 bytes into the SNI name (cut VERY early).
+    //
+    // Fixed on purpose. Cutting the name within its first bytes is what stops
+    // DPI matching on a prefix, and the fragment that results is the length of
+    // everything before the SNI — so it tracks the SNI's position whatever
+    // value is chosen here. Randomising it would move that by a byte or two
+    // without hiding anything.
     let split1 = sni_offset + 2.min(sni_length);
-    // Split point 2: approximately 2/3 through the SNI name
-    let split2 = sni_offset + ((sni_length * 2) / 3).max(4.min(sni_length));
+    // Split point 2: somewhere further inside the name, chosen per packet.
+    //
+    // This one was a fixed fraction of the SNI length, which made the middle
+    // fragment a pure function of it — for ordinary hostnames it landed in a
+    // narrow band, the same value for the same site every time. Any cut inside
+    // the name serves the strategy equally, so pick one at random.
+    let split2 = sni_offset + second_split_offset(sni_length);
 
     if split1 >= split2 || split2 >= payload.len() {
         // SNI too short for 3-way split, fall back to 2-fragment
@@ -417,4 +471,61 @@ fn build_tls_fragment(
     }
 
     packet
+}
+
+#[cfg(test)]
+mod split_point_tests {
+    use super::*;
+
+    /// The second cut used to be a fixed fraction of the SNI length, so the
+    /// middle fragment was the same size for the same site every time. It now
+    /// varies, while staying inside the name so the split still does its job.
+    #[test]
+    fn the_second_split_varies_but_stays_inside_the_name() {
+        for sni_length in [8usize, 15, 19, 47] {
+            let mut seen = std::collections::BTreeSet::new();
+            for _ in 0..300 {
+                let offset = second_split_offset(sni_length);
+                assert!(
+                    offset > 2,
+                    "must fall past the first cut at offset 2, got {offset}"
+                );
+                assert!(
+                    offset <= sni_length,
+                    "must stay within the {sni_length}-byte name, got {offset}"
+                );
+                seen.insert(offset);
+            }
+            assert!(
+                seen.len() > 1,
+                "a {sni_length}-byte name offers room to vary, saw only {seen:?}"
+            );
+        }
+    }
+
+    /// Names too short to offer a choice keep a deterministic cut rather than
+    /// collapsing onto the first one or running past the name.
+    #[test]
+    fn very_short_names_still_get_a_usable_second_split() {
+        for sni_length in [1usize, 2, 3] {
+            let offset = second_split_offset(sni_length);
+            assert!(
+                offset >= 1 && offset <= sni_length.max(4),
+                "offset {offset} is nonsense for a {sni_length}-byte name"
+            );
+        }
+    }
+
+    /// The jitter source has to actually vary, and stay inside its range.
+    #[test]
+    fn jitter_stays_in_range_and_is_not_constant() {
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..500 {
+            let v = jitter(10);
+            assert!(v < 10, "jitter({}) returned {v}", 10);
+            seen.insert(v);
+        }
+        assert!(seen.len() > 5, "jitter barely varies: {seen:?}");
+        assert_eq!(jitter(0), 0, "an empty range must not divide by zero");
+    }
 }
