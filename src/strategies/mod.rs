@@ -324,7 +324,10 @@ impl StrategyEngine {
         // Subtracting from the common initial value gives us the hop count.
         // DPI is typically 1-2 hops before the server, so fake TTL = hops - 2.
         // This works universally across ISPs — no hardcoded values needed.
-        if tcp.is_syn_ack() && self.config.strategies.auto_ttl {
+        // Only detect when a fake packet will actually use the result. With
+        // fakes disabled this ran on every SYN-ACK and filled a cache keyed by
+        // peer address that nothing ever read.
+        if tcp.is_syn_ack() && self.config.strategies.auto_ttl && self.fake_ttl_is_used() {
             let recv_ttl = packet.ttl();
             // Determine initial TTL (servers use 64, 128, or 255)
             let initial_ttl = if recv_ttl <= 64 {
@@ -735,6 +738,79 @@ impl StrategyEngine {
                 | BypassMode::Aggressive
                 | BypassMode::AutoDetect
         ) && self.config.strategies.fake_packet_enabled
+    }
+
+    /// Whether anything will actually consume a detected TTL.
+    ///
+    /// Auto-TTL exists for one purpose: choosing the TTL of a fake packet so it
+    /// dies past the DPI and before the server. If no fake packet will be built,
+    /// every detection is work whose result nothing reads — and it keeps a cache
+    /// keyed by peer address for no benefit. Mode 4 builds fakes whatever
+    /// `fake_packet_enabled` says, since that is the mode's entire point; the
+    /// other modes honour the flag.
+    fn fake_ttl_is_used(&self) -> bool {
+        self.fake_enabled() || matches!(self.mode, BypassMode::FakePacket)
+    }
+
+    /// Log which techniques this run will actually apply.
+    ///
+    /// A mode permits techniques; the config arms them, and several ship
+    /// disabled on purpose. "All active techniques" with `fake_packet_enabled =
+    /// false` and `tcp_window_size = 0` applies exactly one, which is easy to
+    /// mistake for a malfunction when the counters stay at zero. State it at
+    /// startup instead of leaving it to be inferred from metrics.
+    pub fn log_active_techniques(&self) {
+        let s = &self.config.strategies;
+        let quic_mode = matches!(self.mode, BypassMode::Aggressive | BypassMode::AutoDetect);
+
+        info!(
+            mode = ?self.mode,
+            tls_fragmentation = true,
+            http_fragmentation = true,
+            passive_defence = self.passive_enabled(),
+            fake_packets = self.fake_enabled(),
+            window_size = self.should_modify_window(),
+            quic_desync = quic_mode && s.quic_desync,
+            auto_ttl = s.auto_ttl && self.fake_ttl_is_used(),
+            "active techniques"
+        );
+
+        for (name, reason) in [
+            (
+                "fake packets",
+                (!self.fake_enabled()).then(|| {
+                    if s.fake_packet_enabled {
+                        "not applied in this mode"
+                    } else {
+                        "[strategies] fake_packet_enabled = false"
+                    }
+                }),
+            ),
+            (
+                "TCP window size",
+                (!self.should_modify_window()).then(|| {
+                    if s.tcp_window_size > 0 {
+                        "not applied in this mode"
+                    } else {
+                        "[strategies] tcp_window_size = 0"
+                    }
+                }),
+            ),
+            (
+                "QUIC desync",
+                (!(quic_mode && s.quic_desync)).then(|| {
+                    if s.quic_desync {
+                        "only applied in mode 6 (aggressive)"
+                    } else {
+                        "[strategies] quic_desync = false"
+                    }
+                }),
+            ),
+        ] {
+            if let Some(reason) = reason {
+                info!(technique = name, reason = reason, "technique not active");
+            }
+        }
     }
 
     fn should_modify_window(&self) -> bool {

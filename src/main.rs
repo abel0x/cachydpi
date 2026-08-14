@@ -140,6 +140,17 @@ fn main() -> Result<()> {
     // Install signal handlers
     setup_signal_handlers()?;
 
+    // Build the strategy engine before the dry run returns, so that inspecting
+    // the configuration also reports which techniques it actually arms. It
+    // needs no privileges and touches no external state.
+    let mode = BypassMode::from_mode_number(config.general.mode);
+    let engine = StrategyEngine::new(mode, config.clone());
+
+    // A mode permits techniques; the config arms them, and several ship
+    // disabled. Say which are actually running rather than leaving it to be
+    // guessed from counters that stay at zero.
+    engine.log_active_techniques();
+
     // Dry run mode
     if cli.dry_run {
         info!("dry run mode — showing configuration and exiting");
@@ -214,10 +225,6 @@ fn main() -> Result<()> {
     // failure here is a real one: continuing would mean running with an
     // unclear privilege state.
     cachydpi::privileges::drop_root().context("FATAL: failed to drop root privileges")?;
-
-    // Initialize strategy engine
-    let mode = BypassMode::from_mode_number(config.general.mode);
-    let engine = StrategyEngine::new(mode, config.clone());
 
     // Start metrics server (Unix socket for cachydpi-monitor)
     let _metrics_handle = std::thread::Builder::new()

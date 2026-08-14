@@ -847,9 +847,68 @@ mod evaluate_inbound {
         );
     }
 
+    /// Auto-TTL exists only to pick the TTL of a fake packet. With fake packets
+    /// off — the shipped default — running it on every SYN-ACK computes a value
+    /// nothing reads and fills a cache keyed by peer address for no benefit.
+    #[test]
+    fn auto_ttl_does_not_run_when_no_fake_packet_will_use_it() {
+        let mut config = default_config();
+        config.strategies.auto_ttl = true;
+        config.strategies.fake_packet_enabled = false; // no consumer
+        let engine = StrategyEngine::new(BypassMode::AllActive, config);
+
+        let pkt = build_syn_ack_packet(44);
+        let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
+        let _action = engine.evaluate_inbound(&parsed);
+
+        assert_eq!(
+            engine.get_fake_ttl_for_test(parsed.src_addr()),
+            0,
+            "nothing consumes a detected TTL here, so none should be cached"
+        );
+    }
+
+    /// Mode 4 builds fake packets, so it would benefit from a learned TTL — but
+    /// it never gets one, and that predates the gating above: auto-TTL is
+    /// detected on the inbound path, which returns early unless passive defence
+    /// is enabled, and mode 4 is not one of the modes that enables it. Its fake
+    /// packets therefore always fall back to estimating the TTL from the
+    /// outbound packet instead of measuring it from a SYN-ACK.
+    ///
+    /// Pinned as the current behaviour rather than asserted as desirable; the
+    /// fix is to decide whether mode 4 should run passive defence at all.
+    #[test]
+    fn fake_packet_mode_never_learns_a_ttl_because_the_inbound_path_is_gated() {
+        let mut config = default_config();
+        config.strategies.auto_ttl = true;
+        config.strategies.fake_packet_enabled = true;
+        let engine = StrategyEngine::new(BypassMode::FakePacket, config);
+
+        let pkt = build_syn_ack_packet(44);
+        let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
+        let _action = engine.evaluate_inbound(&parsed);
+
+        assert_eq!(
+            engine.get_fake_ttl_for_test(parsed.src_addr()),
+            0,
+            "mode 4 does not run the inbound path, so nothing is ever cached"
+        );
+
+        // The same config in a mode that does run passive defence learns it.
+        let mut config = default_config();
+        config.strategies.auto_ttl = true;
+        config.strategies.fake_packet_enabled = true;
+        let engine = StrategyEngine::new(BypassMode::AllActive, config);
+        let _action = engine.evaluate_inbound(&parsed);
+        assert!(engine.get_fake_ttl_for_test(parsed.src_addr()) > 0);
+    }
+
     #[test]
     fn auto_ttl_detection_from_syn_ack() {
-        let config = default_config(); // auto_ttl=true by default
+        let mut config = default_config(); // auto_ttl=true by default
+        // Detection only runs when a fake packet will use the result — the TTL
+        // exists for nothing else — so arm the consumer.
+        config.strategies.fake_packet_enabled = true;
         let engine = StrategyEngine::new(BypassMode::AllActive, config);
 
         // Server at 20 hops: initial_ttl=64, recv_ttl=44, hops=20, fake_ttl=18
@@ -869,7 +928,8 @@ mod evaluate_inbound {
 
     #[test]
     fn auto_ttl_cache_eviction() {
-        let config = default_config();
+        let mut config = default_config();
+        config.strategies.fake_packet_enabled = true; // consumer of the cache
         let engine = StrategyEngine::new(BypassMode::AllActive, config);
 
         // Fill TTL cache beyond MAX_TTL_CACHE_ENTRIES (1024)
@@ -1543,8 +1603,10 @@ mod edge_cases {
 
     #[test]
     fn multiple_engines_independent_ttl_cache() {
-        let engine1 = StrategyEngine::new(BypassMode::AllActive, default_config());
-        let engine2 = StrategyEngine::new(BypassMode::AllActive, default_config());
+        let mut config = default_config();
+        config.strategies.fake_packet_enabled = true; // consumer of the cache
+        let engine1 = StrategyEngine::new(BypassMode::AllActive, config.clone());
+        let engine2 = StrategyEngine::new(BypassMode::AllActive, config);
 
         let pkt = build_syn_ack_packet(44);
         let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
