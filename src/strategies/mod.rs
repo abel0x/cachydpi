@@ -152,17 +152,17 @@ pub struct StrategyEngine {
     auto_ttl: AtomicU8,
     /// Per-destination TTL cache: maps destination IP → detected fake TTL
     ttl_cache: Mutex<HashMap<IpAddr, u8>>,
-    /// Peers seen sending a forged RST, kept only to count how many are
-    /// distinct.
+    /// How many distinct peers sent a forged RST — estimated, not remembered.
     ///
     /// The totals cannot separate "one host resetting a connection repeatedly"
     /// from "the DPI resetting many different destinations", and those call for
-    /// opposite conclusions. The addresses stay in this set: only its size is
-    /// published, never a member. Bounded like the TTL cache, so a hostile or
-    /// noisy network cannot grow it without limit; past the cap the count
-    /// saturates rather than evicting, since an eviction would silently turn a
-    /// distinct-count into an undercount.
-    forged_rst_sources: Mutex<std::collections::HashSet<IpAddr>>,
+    /// opposite conclusions. Answering it with a set would mean holding peer
+    /// addresses in memory, which is the same data this daemon keeps out of its
+    /// logs and can still reach disk through swap, a core dump or
+    /// /proc/pid/mem. The estimator keeps 2 KiB of small integers instead: no
+    /// address is retained, the state cannot grow, and with nothing to exhaust
+    /// there is no saturation to report.
+    forged_rst_sources: Mutex<crate::cardinality::DistinctCounter>,
 }
 
 impl StrategyEngine {
@@ -172,27 +172,21 @@ impl StrategyEngine {
             config,
             auto_ttl: AtomicU8::new(0),
             ttl_cache: Mutex::new(HashMap::new()),
-            forged_rst_sources: Mutex::new(std::collections::HashSet::new()),
+            forged_rst_sources: Mutex::new(crate::cardinality::DistinctCounter::new()),
         }
     }
 
     /// Note that a forged RST came from `source`, for the distinct-source count.
     ///
-    /// The address is used as a set key and nothing else — it is never logged,
-    /// published or derived from. Only the resulting count reaches the metrics
-    /// snapshot, which is world-readable.
+    /// The address is hashed into the estimator and dropped; it is never
+    /// stored, logged, published or derived from. Only the estimate reaches the
+    /// metrics snapshot, which is world-readable.
     fn record_forged_rst_source(&self, source: IpAddr) {
         if let Ok(mut sources) = self.forged_rst_sources.lock() {
-            // Saturate rather than evict: dropping entries would turn the
-            // distinct count into an undercount without saying so.
-            if sources.len() >= MAX_TTL_CACHE_ENTRIES && !sources.contains(&source) {
-                return;
-            }
-            if sources.insert(source) {
-                METRICS
-                    .forged_rst_sources
-                    .store(sources.len() as u64, Ordering::Relaxed);
-            }
+            sources.insert(&source);
+            METRICS
+                .forged_rst_sources
+                .store(sources.estimate(), Ordering::Relaxed);
         }
     }
 

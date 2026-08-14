@@ -4,6 +4,7 @@
 //
 // Exports all modules for the CachyDPI DPI bypass engine.
 
+pub mod cardinality;
 pub mod cli;
 pub mod config;
 pub mod dpi_detect;

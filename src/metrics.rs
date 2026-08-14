@@ -72,12 +72,13 @@ pub struct Metrics {
 
     // ── Passive defense ──
     pub forged_rst_drops: AtomicU64,
-    /// How many *distinct* peers sent a forged RST.
+    /// How many *distinct* peers sent a forged RST, estimated.
     ///
     /// 45 resets from one host and 45 from 45 hosts mean very different
-    /// things, and the total alone cannot tell them apart. Only the count is
-    /// kept here; the set it is derived from lives in the strategy engine and
-    /// never leaves the process.
+    /// things, and the total alone cannot tell them apart. Counted by a
+    /// HyperLogLog rather than a set, so no address is retained anywhere:
+    /// approximate to roughly 2%, exact at the small counts that matter here,
+    /// and non-decreasing.
     pub forged_rst_sources: AtomicU64,
     pub forged_alert_drops: AtomicU64,
     pub forged_redirect_drops: AtomicU64,
