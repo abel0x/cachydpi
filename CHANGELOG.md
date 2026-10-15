@@ -5,6 +5,36 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-10-15
+
+The daemon now handles only the packets it can act on, and passive defence
+stops mistaking a server's own error responses for injected ones.
+
+### Changed
+
+- **Only the start of each connection is queued.** Outbound HTTPS is queued
+  for its first 10 packets, enough for the ClientHello; small inbound TLS
+  records for the first 16 replies; inbound HTTP only when 1000 bytes or
+  shorter. Previously every upload, every plain-HTTP download and every QUIC
+  packet went through the daemon to be accepted unchanged, paced by a process
+  limited to a quarter of a CPU. These limits use conntrack packet counters,
+  which nftables enables for the namespace when the rules are loaded.
+- **QUIC is queued only when mode 6 has `quic_desync` on**, and then only its
+  first packets.
+- **The queue fails open.** If the daemon falls behind and the queue fills,
+  packets pass through unmodified instead of being dropped.
+
+### Fixed
+
+- A server's own fatal TLS alert (`handshake_failure`, `protocol_version`,
+  `internal_error`) is no longer dropped as forged, so a failed handshake
+  fails at once instead of timing out.
+- Injected TLS alerts and HTTP redirects are recognised by hop count, like
+  RSTs since 1.1.1: one arriving from nearer than the server's SYN-ACK is
+  dropped whatever it contains. A block-page redirect to a bare address is now
+  caught, and a real redirect whose URL contains a word like "restricted" is
+  no longer dropped.
+
 ## [1.2.0] — 2026-10-15
 
 Bypass now reaches the browsers that most need it, and the `whitelist`
