@@ -128,6 +128,22 @@ impl NfQueue {
             // Set queue max length
             sys::nfq_set_queue_maxlen(queue_handle, DEFAULT_QUEUE_MAXLEN);
 
+            // A full queue otherwise drops every packet that arrives until it
+            // drains — the daemon falling behind would cut the user off. Fail
+            // open: past the limit, packets go through unmodified, which is
+            // what the rules' `bypass` already does when no one is listening.
+            if sys::nfq_set_queue_flags(
+                queue_handle,
+                sys::NFQA_CFG_F_FAIL_OPEN,
+                sys::NFQA_CFG_F_FAIL_OPEN,
+            ) < 0
+            {
+                warn!(
+                    queue_num = queue_num,
+                    "could not set fail-open on the queue; if it fills, packets will be dropped"
+                );
+            }
+
             let fd = sys::nfq_fd(handle);
             if fd < 0 {
                 sys::nfq_destroy_queue(queue_handle);

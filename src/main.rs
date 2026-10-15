@@ -183,7 +183,8 @@ fn main() -> Result<()> {
     }
 
     // Install nftables rules
-    let mut nft_rules = NftRules::new(config.general.queue_num, config.general.ipv6);
+    let mut nft_rules = NftRules::new(config.general.queue_num, config.general.ipv6)
+        .with_quic(cachydpi::strategies::quic_desync_active(mode, &config));
     if config.general.manage_rules {
         nft_rules
             .install()
@@ -349,7 +350,9 @@ fn run_queue_loop(
 fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path) -> Result<()> {
     match cmd {
         Commands::InstallRules => {
-            let mut rules = NftRules::new(config.general.queue_num, config.general.ipv6);
+            let mode = BypassMode::from_mode_number(config.general.mode);
+            let mut rules = NftRules::new(config.general.queue_num, config.general.ipv6)
+                .with_quic(cachydpi::strategies::quic_desync_active(mode, config));
             rules.install()?;
             // Don't remove on drop — the user wants them to persist
             rules.set_persistent();

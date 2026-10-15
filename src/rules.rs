@@ -23,16 +23,110 @@ pub const DEFAULT_QUEUE_NUM: u16 = 200;
 pub struct NftRules {
     queue_num: u16,
     ipv6: bool,
+    quic: bool,
     installed: bool,
 }
+
+/// How many packets of a connection, counted in one direction, can still
+/// matter to the engine. The ClientHello follows the SYN and the handshake ACK
+/// and spans at most three segments; the margin covers retransmissions.
+/// Everything after this goes straight through the kernel.
+const OUTBOUND_PACKETS: u32 = 10;
+/// Reply packets in which an injected TLS alert can arrive. A DPI box answers
+/// the ClientHello at once, ahead of the server's own first flight.
+const INBOUND_PACKETS: u32 = 16;
+/// An injected HTTP redirect is a short response; a download is full-size
+/// segments, and none of those need to leave the kernel.
+const HTTP_RESPONSE_MAX_LEN: u32 = 1000;
 
 impl NftRules {
     pub fn new(queue_num: u16, ipv6: bool) -> Self {
         NftRules {
             queue_num,
             ipv6,
+            quic: false,
             installed: false,
         }
+    }
+
+    /// Queue the first packets of QUIC connections. Only worth doing when
+    /// QUIC desync is going to act on them: otherwise every QUIC packet would
+    /// make a round trip through the daemon to be accepted unchanged.
+    pub fn with_quic(mut self, quic: bool) -> Self {
+        self.quic = quic;
+        self
+    }
+
+    /// The nft script `install` applies.
+    ///
+    /// `ct original packets` / `ct reply packets` cap queueing to the start of
+    /// each connection. Using them makes the kernel turn on conntrack
+    /// accounting for the namespace, so they work whatever
+    /// net.netfilter.nf_conntrack_acct was.
+    pub fn ruleset_script(&self) -> String {
+        let quic = if self.quic {
+            format!(
+                "        udp dport 443 ct original packets <= 4 queue num {} bypass\n",
+                self.queue_num
+            )
+        } else {
+            String::new()
+        };
+        let mut families = vec!["ip"];
+        if self.ipv6 {
+            families.push("ip6");
+        }
+        families
+            .into_iter()
+            .map(|family| {
+                format!(
+                    r#"
+table {family} {table} {{
+    chain output {{
+        type filter hook output priority 0; policy accept;
+
+        # Skip packets already processed by CachyDPI (marked)
+        meta mark {mark:#x} accept
+
+        # Outgoing HTTP requests
+        tcp dport {{ 80, 8080 }} tcp flags & (syn|psh|ack) == psh|ack queue num {queue} bypass
+
+        # Outgoing HTTPS data at the start of a connection, for the ClientHello.
+        # ACK rather than PSH|ACK: the non-final segments of a ClientHello
+        # spanning several carry no PSH. meta length > 80 skips empty ACKs.
+        tcp dport 443 tcp flags & ack == ack meta length > 80 ct original packets <= {out_pkts} queue num {queue} bypass
+
+        # Outgoing SYN: window size, and the start of the per-connection record
+        tcp dport {{ 80, 443, 8080 }} tcp flags & (syn|ack) == syn queue num {queue} bypass
+{quic}    }}
+
+    chain input {{
+        type filter hook input priority 0; policy accept;
+
+        # RSTs, judged against the server's hop count
+        tcp sport {{ 80, 443, 8080 }} tcp flags & rst == rst queue num {queue_in} bypass
+
+        # SYN-ACKs: the server's hop count, and auto-TTL
+        tcp sport {{ 80, 443, 8080 }} tcp flags & (syn|ack) == syn|ack queue num {queue_in} bypass
+
+        # Short HTTP responses, for injected redirects
+        tcp sport 80 tcp flags & (psh|ack) == psh|ack meta length <= {http_len} queue num {queue_in} bypass
+
+        # Small TLS records early in a connection, for injected alerts
+        tcp sport 443 tcp flags & (psh|ack) == psh|ack meta length < 120 ct reply packets <= {in_pkts} queue num {queue_in} bypass
+    }}
+}}
+"#,
+                    table = NFT_TABLE,
+                    mark = CACHYDPI_MARK,
+                    queue = self.queue_num,
+                    queue_in = self.queue_num + 1,
+                    out_pkts = OUTBOUND_PACKETS,
+                    in_pkts = INBOUND_PACKETS,
+                    http_len = HTTP_RESPONSE_MAX_LEN,
+                )
+            })
+            .collect()
     }
 
     /// Install nftables rules to queue HTTP/HTTPS/QUIC packets.
@@ -48,87 +142,7 @@ impl NftRules {
         // Remove any stale rules from a previous run
         let _ = self.remove();
 
-        let mut nft_script = String::new();
-
-        // ── IPv4 rules ──
-        nft_script.push_str(&format!(
-            r#"
-table ip {table} {{
-    chain output {{
-        type filter hook output priority 0; policy accept;
-
-        # Skip packets already processed by CachyDPI (marked)
-        meta mark {mark:#x} accept
-
-        # Queue outgoing HTTP requests (port 80)
-        tcp dport {{ 80, 8080 }} tcp flags & (syn|psh|ack) == psh|ack queue num {queue} bypass
-
-        # Queue outgoing HTTPS (port 443) — for TLS ClientHello
-        # Use ACK flag only (not PSH+ACK) because the OS may split
-        # ClientHello across segments where non-final segments lack PSH.
-        # meta length > 80 filters out empty ACKs.
-        tcp dport 443 tcp flags & ack == ack meta length > 80 queue num {queue} bypass
-
-        # Queue outgoing TCP SYN (for window size manipulation)
-        tcp dport {{ 80, 443, 8080 }} tcp flags & (syn|ack) == syn queue num {queue} bypass
-
-        # Queue outgoing QUIC/UDP (port 443)
-        udp dport 443 queue num {queue} bypass
-    }}
-
-    chain input {{
-        type filter hook input priority 0; policy accept;
-
-        # Queue incoming TCP RST (for passive DPI detection)
-        tcp sport {{ 80, 443, 8080 }} tcp flags & rst == rst queue num {queue_in} bypass
-
-        # Queue incoming SYN-ACK (for auto-TTL detection from server response)
-        tcp sport {{ 80, 443, 8080 }} tcp flags & (syn|ack) == syn|ack queue num {queue_in} bypass
-
-        # Queue incoming HTTP responses from port 80 (for redirect detection)
-        tcp sport 80 tcp flags & (psh|ack) == psh|ack queue num {queue_in} bypass
-
-        # Queue incoming small TLS packets from port 443 (for forged TLS alert detection)
-        # TLS alerts are tiny (< 120 bytes total); only queue small packets to avoid overhead
-        tcp sport 443 tcp flags & (psh|ack) == psh|ack meta length < 120 queue num {queue_in} bypass
-    }}
-}}
-"#,
-            table = NFT_TABLE,
-            mark = CACHYDPI_MARK,
-            queue = self.queue_num,
-            queue_in = self.queue_num + 1,
-        ));
-
-        // ── IPv6 rules ──
-        if self.ipv6 {
-            nft_script.push_str(&format!(
-                r#"
-table ip6 {table} {{
-    chain output {{
-        type filter hook output priority 0; policy accept;
-        meta mark {mark:#x} accept
-        tcp dport {{ 80, 8080 }} tcp flags & (syn|psh|ack) == psh|ack queue num {queue} bypass
-        tcp dport 443 tcp flags & ack == ack meta length > 80 queue num {queue} bypass
-        tcp dport {{ 80, 443, 8080 }} tcp flags & (syn|ack) == syn queue num {queue} bypass
-        udp dport 443 queue num {queue} bypass
-    }}
-
-    chain input {{
-        type filter hook input priority 0; policy accept;
-        tcp sport {{ 80, 443, 8080 }} tcp flags & rst == rst queue num {queue_in} bypass
-        tcp sport {{ 80, 443, 8080 }} tcp flags & (syn|ack) == syn|ack queue num {queue_in} bypass
-        tcp sport 80 tcp flags & (psh|ack) == psh|ack queue num {queue_in} bypass
-        tcp sport 443 tcp flags & (psh|ack) == psh|ack meta length < 120 queue num {queue_in} bypass
-    }}
-}}
-"#,
-                table = NFT_TABLE,
-                mark = CACHYDPI_MARK,
-                queue = self.queue_num,
-                queue_in = self.queue_num + 1,
-            ));
-        }
+        let nft_script = self.ruleset_script();
 
         // Apply rules via nft
         self.run_nft(&nft_script)?;
@@ -291,6 +305,54 @@ mod tests {
         }
         let _ = probe.remove();
         true
+    }
+
+    fn line_with<'a>(script: &'a str, needle: &str) -> &'a str {
+        script
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no rule containing {needle:?} in:\n{script}"))
+    }
+
+    /// Once the ClientHello is past, a connection's traffic has nothing left
+    /// to give the engine; queueing it anyway sent every upload through a
+    /// daemon held to a quarter of a CPU.
+    #[test]
+    fn only_the_start_of_a_connection_is_queued() {
+        let script = NftRules::new(200, false).ruleset_script();
+        assert!(line_with(&script, "tcp dport 443").contains("ct original packets <= 10"));
+        assert!(
+            line_with(&script, "tcp sport 443 tcp flags & (psh|ack)")
+                .contains("ct reply packets <= 16")
+        );
+        assert!(
+            line_with(&script, "tcp sport 80 tcp flags & (psh|ack)")
+                .contains("meta length <= 1000")
+        );
+    }
+
+    /// QUIC used to be queued whole whether or not anything would act on it.
+    #[test]
+    fn quic_is_queued_only_when_desync_will_use_it() {
+        let off = NftRules::new(200, true).ruleset_script();
+        assert!(!off.contains("udp dport 443"), "{off}");
+        let on = NftRules::new(200, true).with_quic(true).ruleset_script();
+        assert_eq!(
+            on.matches("udp dport 443 ct original packets <= 4").count(),
+            2
+        );
+    }
+
+    #[test]
+    fn ip6_table_mirrors_ip_and_appears_only_with_ipv6() {
+        let v4 = NftRules::new(200, false).ruleset_script();
+        assert!(v4.contains("table ip cachydpi") && !v4.contains("table ip6"));
+        let both = NftRules::new(200, true).ruleset_script();
+        let (ip, ip6) = both.split_at(both.find("table ip6").unwrap());
+        assert_eq!(
+            ip.trim().replace("table ip ", ""),
+            ip6.trim().replace("table ip6 ", "")
+        );
     }
 
     /// The regression: an ip6 table installed while ipv6 was enabled must be

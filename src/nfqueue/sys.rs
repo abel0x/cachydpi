@@ -40,6 +40,10 @@ pub const NFQNL_COPY_NONE: u8 = 0;
 pub const NFQNL_COPY_META: u8 = 1;
 pub const NFQNL_COPY_PACKET: u8 = 2;
 
+/// Queue flag: when the queue is full, accept packets instead of dropping
+/// them (Linux 3.6+).
+pub const NFQA_CFG_F_FAIL_OPEN: u32 = 1 << 0;
+
 /// Verdicts
 pub const NF_DROP: u32 = 0;
 pub const NF_ACCEPT: u32 = 1;
@@ -66,6 +70,7 @@ unsafe extern "C" {
     // ── Queue configuration ──
     pub fn nfq_set_mode(qh: *mut nfq_q_handle, mode: u8, range: c_uint) -> c_int;
     pub fn nfq_set_queue_maxlen(qh: *mut nfq_q_handle, queuelen: u32) -> c_int;
+    pub fn nfq_set_queue_flags(qh: *mut nfq_q_handle, mask: u32, flags: u32) -> c_int;
 
     // ── Verdict ──
     pub fn nfq_set_verdict(

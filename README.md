@@ -18,7 +18,7 @@ application ──▶ kernel (nftables OUTPUT) ──▶ NFQUEUE 200 ──▶ C
 incoming forged RST/redirect/TLS-alert ◀── NFQUEUE 201 ◀── kernel (nftables INPUT)
 ```
 
-CachyDPI installs an nftables table named `cachydpi` that queues outbound HTTP (80/8080), HTTPS (443), TCP SYN, and QUIC (UDP 443) packets to NFQUEUE `queue_num` (default **200**), and queues selected inbound packets (RST, SYN-ACK, HTTP responses, small TLS records) to `queue_num + 1` (default **201**) for passive-DPI detection. All rules use the `bypass` flag, so if the daemon is not running, packets pass through unmodified rather than being dropped.
+CachyDPI installs an nftables table named `cachydpi` that queues outbound HTTP (80/8080) requests, TCP SYNs, and the first packets of each HTTPS (443) connection — enough to carry the ClientHello — to NFQUEUE `queue_num` (default **200**). QUIC (UDP 443) is queued only when mode 6 has `quic_desync` on, and then only the first packets. Selected inbound packets (RST, SYN-ACK, short HTTP responses, small TLS records early in a connection) go to `queue_num + 1` (default **201**) for passive-DPI detection. Everything else stays in the kernel, so bulk transfers never pass through the daemon. All rules use the `bypass` flag, and the queue is set to fail open, so if the daemon is not running or falls behind, packets pass through unmodified rather than being dropped.
 
 ## Requirements
 

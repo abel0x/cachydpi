@@ -142,6 +142,15 @@ impl BypassMode {
     }
 }
 
+/// Whether QUIC Initials are desynced: mode 6 with `quic_desync` set.
+///
+/// Mode 7 is documented as behaving exactly like mode 5, and mode 5 leaves
+/// QUIC alone. The nftables rules use the same answer to decide whether QUIC
+/// is queued at all.
+pub fn quic_desync_active(mode: BypassMode, config: &Config) -> bool {
+    matches!(mode, BypassMode::Aggressive) && config.strategies.quic_desync
+}
+
 /// Maximum entries in per-destination TTL cache
 const MAX_TTL_CACHE_ENTRIES: usize = 1024;
 
@@ -789,9 +798,7 @@ impl StrategyEngine {
         packet: &ParsedPacket<'_>,
         udp: &packet::udp::UdpHeader<'_>,
     ) -> PacketAction {
-        // Mode 7 is documented as behaving exactly like mode 5, and mode 5
-        // leaves QUIC alone.
-        if !matches!(self.mode, BypassMode::Aggressive) || !self.config.strategies.quic_desync {
+        if !quic_desync_active(self.mode, &self.config) {
             return PacketAction::Accept;
         }
 
@@ -883,7 +890,7 @@ impl StrategyEngine {
     /// startup instead of leaving it to be inferred from metrics.
     pub fn log_active_techniques(&self) {
         let s = &self.config.strategies;
-        let quic_mode = matches!(self.mode, BypassMode::Aggressive);
+        let quic_active = quic_desync_active(self.mode, &self.config);
 
         info!(
             mode = ?self.mode,
@@ -892,7 +899,7 @@ impl StrategyEngine {
             passive_defence = self.passive_enabled(),
             fake_packets = self.fake_enabled(),
             window_size = self.should_modify_window(),
-            quic_desync = quic_mode && s.quic_desync,
+            quic_desync = quic_active,
             auto_ttl = s.auto_ttl && self.fake_ttl_is_used(),
             "active techniques"
         );
@@ -920,7 +927,7 @@ impl StrategyEngine {
             ),
             (
                 "QUIC desync",
-                (!(quic_mode && s.quic_desync)).then_some({
+                (!quic_active).then_some({
                     if s.quic_desync {
                         "only applied in mode 6 (aggressive)"
                     } else {
