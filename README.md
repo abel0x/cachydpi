@@ -6,7 +6,7 @@ CachyDPI is a Rust daemon that intercepts outgoing TCP/UDP traffic through **nft
 
 It runs as a hardened `systemd` service under a dedicated, non-root user, granted only `CAP_NET_ADMIN` and `CAP_NET_RAW` — and it gives up `CAP_NET_RAW` once its sockets are open.
 
-> **Scope, honestly stated.** CachyDPI is a *client-side* tool. It works against passive DPI (forged RST / redirect / TLS-alert injection) and SNI/Host-based blocking where the DPI does not reassemble the TCP stream. It **cannot** defeat inline DPI that fully reassembles streams, server-side RST injection, IP-level blocking, or DNS poisoning. See [Limitations](#limitations).
+> **Scope, honestly stated.** CachyDPI is a *client-side* tool. It works against passive DPI (forged RST / redirect / TLS-alert injection) and SNI/Host-based blocking where the DPI does not reassemble the TCP stream. It **cannot** defeat inline DPI that fully reassembles streams, server-side RST injection, or IP-level blocking. DNS poisoning is outside what packet edits can fix; `sudo cachydpi dns enable` turns on encrypted DNS for it (see [DNS security](#dns-security)). See [Limitations](#limitations).
 
 ---
 
