@@ -1848,3 +1848,267 @@ mod edge_cases {
         assert!(ttl1 > 0, "Engine1 should have cached TTL");
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  ClientHello spanning several TCP segments
+// ═══════════════════════════════════════════════════════════════════
+
+mod multi_segment_client_hello {
+    use super::*;
+
+    fn ext(kind: u16, data: &[u8]) -> Vec<u8> {
+        let mut e = kind.to_be_bytes().to_vec();
+        e.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        e.extend_from_slice(data);
+        e
+    }
+
+    fn sni_ext(name: &str) -> Vec<u8> {
+        let n = name.as_bytes();
+        let mut d = ((n.len() + 3) as u16).to_be_bytes().to_vec();
+        d.push(0);
+        d.extend_from_slice(&(n.len() as u16).to_be_bytes());
+        d.extend_from_slice(n);
+        ext(0x0000, &d)
+    }
+
+    /// A ClientHello with the SNI between the given extensions.
+    fn client_hello(name: &str, before_sni: &[Vec<u8>], after_sni: &[Vec<u8>]) -> Vec<u8> {
+        let mut exts: Vec<u8> = before_sni.concat();
+        exts.extend_from_slice(&sni_ext(name));
+        exts.extend_from_slice(&after_sni.concat());
+
+        let mut body = vec![0x03, 0x03];
+        body.extend_from_slice(&[0x11; 32]);
+        body.push(32);
+        body.extend_from_slice(&[0x22; 32]);
+        body.extend_from_slice(&32u16.to_be_bytes());
+        body.extend_from_slice(&[0x13, 0x01].repeat(16));
+        body.extend_from_slice(&[0x01, 0x00]);
+        body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+        body.extend_from_slice(&exts);
+
+        let mut hs = vec![0x01];
+        hs.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        hs.extend_from_slice(&body);
+        let mut rec = vec![0x16, 0x03, 0x01];
+        rec.extend_from_slice(&(hs.len() as u16).to_be_bytes());
+        rec.extend_from_slice(&hs);
+        rec
+    }
+
+    /// What makes a current Chrome ClientHello span two segments: an
+    /// X25519MLKEM768 key share (1216 bytes) and an ECH GREASE extension.
+    fn large_extensions() -> Vec<Vec<u8>> {
+        let mut shares = Vec::new();
+        shares.extend_from_slice(&0x11ecu16.to_be_bytes());
+        shares.extend_from_slice(&1216u16.to_be_bytes());
+        shares.extend(std::iter::repeat_n(0xAB, 1216));
+        let mut key_share = (shares.len() as u16).to_be_bytes().to_vec();
+        key_share.extend_from_slice(&shares);
+        vec![ext(0x0033, &key_share), ext(0xfe0d, &[0x5A; 250])]
+    }
+
+    const ISN: u32 = 0xFFFF_FF00; // close to wrapping, on purpose
+
+    /// Cut a payload into segments of at most `mss` bytes, as the kernel's
+    /// GSO segmentation hands them to the queue.
+    fn segments(payload: &[u8], mss: usize) -> Vec<Vec<u8>> {
+        payload
+            .chunks(mss)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let last = (i + 1) * mss >= payload.len();
+                let flags = if last {
+                    tcp::TCP_PSH | tcp::TCP_ACK
+                } else {
+                    tcp::TCP_ACK
+                };
+                build_ipv4_tcp_packet(
+                    Ipv4Addr::new(192, 168, 1, 100),
+                    Ipv4Addr::new(93, 184, 216, 34),
+                    12345,
+                    443,
+                    ISN.wrapping_add((i * mss) as u32),
+                    500,
+                    flags,
+                    64,
+                    chunk,
+                )
+            })
+            .collect()
+    }
+
+    fn run(engine: &StrategyEngine, pkts: &[Vec<u8>]) -> Vec<PacketAction> {
+        pkts.iter()
+            .map(|p| {
+                engine.evaluate_outbound(&ParsedPacket::parse(p, Direction::Outbound).unwrap())
+            })
+            .collect()
+    }
+
+    /// Bytes on the wire for one action, ordered by sequence number, checked
+    /// to tile the segment's own range exactly.
+    fn sent_bytes(original: &[u8], action: &PacketAction) -> Vec<u8> {
+        let parsed = ParsedPacket::parse(original, Direction::Outbound).unwrap();
+        let tcp = parsed.tcp().unwrap();
+        let fragments = match action {
+            PacketAction::Accept => return tcp.payload.to_vec(),
+            PacketAction::Fragment(f) => f,
+            PacketAction::InjectAndFragment { fragments, .. } => fragments,
+            other => panic!("unexpected action {other:?}"),
+        };
+        let mut parts: Vec<(u32, Vec<u8>)> = fragments
+            .iter()
+            .map(|f| {
+                let p = ParsedPacket::parse(f, Direction::Outbound).unwrap();
+                let t = p.tcp().unwrap();
+                (t.seq_num.wrapping_sub(tcp.seq_num), t.payload.to_vec())
+            })
+            .collect();
+        parts.sort_by_key(|(off, _)| *off);
+        let mut next = 0u32;
+        let mut out = Vec::new();
+        for (off, data) in parts {
+            assert_eq!(off, next, "fragments must tile the segment");
+            next += data.len() as u32;
+            out.extend_from_slice(&data);
+        }
+        out
+    }
+
+    fn is_split(action: &PacketAction) -> bool {
+        matches!(
+            action,
+            PacketAction::Fragment(_) | PacketAction::InjectAndFragment { .. }
+        )
+    }
+
+    #[test]
+    fn sni_in_the_second_segment_is_split_there() {
+        let hello = client_hello("discord.com", &large_extensions(), &[]);
+        let pkts = segments(&hello, 1448);
+        assert_eq!(pkts.len(), 2);
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        let actions = run(&engine, &pkts);
+        assert!(
+            matches!(actions[0], PacketAction::Accept),
+            "{:?}",
+            actions[0]
+        );
+        assert!(
+            is_split(&actions[1]),
+            "second segment holds the SNI: {:?}",
+            actions[1]
+        );
+
+        let mut stream = Vec::new();
+        for (p, a) in pkts.iter().zip(&actions) {
+            stream.extend(sent_bytes(p, a));
+        }
+        assert_eq!(
+            stream, hello,
+            "the server must receive the ClientHello unchanged"
+        );
+    }
+
+    #[test]
+    fn the_split_falls_inside_the_name() {
+        let hello = client_hello("discord.com", &large_extensions(), &[]);
+        let pkts = segments(&hello, 1448);
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        let actions = run(&engine, &pkts);
+        let PacketAction::Fragment(frags) = &actions[1] else {
+            panic!("{:?}", actions[1]);
+        };
+        let seg2 = &hello[1448..];
+        let name_at = seg2.windows(11).position(|w| w == b"discord.com").unwrap();
+        let cuts: Vec<usize> = frags
+            .iter()
+            .map(|f| {
+                let p = ParsedPacket::parse(f, Direction::Outbound).unwrap();
+                p.tcp()
+                    .unwrap()
+                    .seq_num
+                    .wrapping_sub(ISN.wrapping_add(1448)) as usize
+            })
+            .filter(|&off| off > 0)
+            .collect();
+        assert!(
+            cuts.iter().any(|&c| c > name_at && c < name_at + 11),
+            "some cut must fall inside the name: cuts {cuts:?}, name at {name_at}"
+        );
+    }
+
+    #[test]
+    fn sni_two_segments_later_is_found() {
+        let hello = client_hello("discord.com", &large_extensions(), &[]);
+        let pkts = segments(&hello, 600);
+        assert_eq!(pkts.len(), 3);
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        let actions = run(&engine, &pkts);
+        assert!(matches!(actions[0], PacketAction::Accept));
+        assert!(matches!(actions[1], PacketAction::Accept));
+        assert!(is_split(&actions[2]), "{:?}", actions[2]);
+        let mut stream = Vec::new();
+        for (p, a) in pkts.iter().zip(&actions) {
+            stream.extend(sent_bytes(p, a));
+        }
+        assert_eq!(stream, hello);
+    }
+
+    #[test]
+    fn domain_filter_applies_to_a_late_sni() {
+        let hello = client_hello("example.org", &large_extensions(), &[]);
+        let pkts = segments(&hello, 1448);
+        let engine = StrategyEngine::new(
+            BypassMode::AllActive,
+            config_with_blacklist(vec!["discord.com".into()]),
+        );
+        let actions = run(&engine, &pkts);
+        assert!(
+            actions.iter().all(|a| matches!(a, PacketAction::Accept)),
+            "a name not on the list is left alone: {actions:?}"
+        );
+    }
+
+    /// The SNI extension header in one segment and its name in the next: the
+    /// name cannot be read whole, so the segment is left as it is rather than
+    /// cut at a guess.
+    #[test]
+    fn a_name_split_across_segments_is_left_alone() {
+        let hello = client_hello("discord.com", &large_extensions(), &[]);
+        let sni_ext_at = hello
+            .windows(4)
+            .position(|w| w == [0x00, 0x00, 0x00, 0x10])
+            .unwrap();
+        let pkts = segments(&hello, sni_ext_at + 6);
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        let actions = run(&engine, &pkts);
+        assert!(
+            actions.iter().all(|a| matches!(a, PacketAction::Accept)),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
+    fn a_retransmitted_second_segment_passes_unchanged() {
+        let hello = client_hello("discord.com", &large_extensions(), &[]);
+        let pkts = segments(&hello, 1448);
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        let first = run(&engine, &pkts);
+        assert!(is_split(&first[1]));
+        let again = run(&engine, &pkts[1..]);
+        assert!(matches!(again[0], PacketAction::Accept), "{:?}", again[0]);
+    }
+
+    #[test]
+    fn sni_in_the_first_segment_still_takes_the_usual_path() {
+        let hello = client_hello("discord.com", &[], &large_extensions());
+        let pkts = segments(&hello, 1448);
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        let actions = run(&engine, &pkts);
+        assert!(is_split(&actions[0]), "{:?}", actions[0]);
+        assert!(matches!(actions[1], PacketAction::Accept));
+    }
+}

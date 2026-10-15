@@ -167,6 +167,9 @@ pub struct StrategyEngine {
     /// The hop count each connection's server answered from, to tell its own
     /// RST from one injected on the path.
     flows: crate::flow_ttl::FlowTtlTable,
+    /// Where a ClientHello spanning segments continues, for the segment that
+    /// carries its SNI.
+    hello_resume: crate::hello_resume::HelloResumeTable,
 }
 
 impl StrategyEngine {
@@ -178,6 +181,7 @@ impl StrategyEngine {
             ttl_cache: Mutex::new(HashMap::new()),
             forged_rst_sources: Mutex::new(crate::cardinality::DistinctCounter::new()),
             flows: crate::flow_ttl::FlowTtlTable::new(),
+            hello_resume: crate::hello_resume::HelloResumeTable::new(),
         }
     }
 
@@ -249,6 +253,13 @@ impl StrategyEngine {
                     "TLS ClientHello detected, applying strategy"
                 );
                 return self.apply_tls_strategy(packet, tcp);
+            }
+
+            // A later segment of a ClientHello whose SNI was not in the first
+            if tcp.is_https_port()
+                && let Some(action) = self.continue_client_hello(packet, tcp)
+            {
+                return action;
             }
 
             // Log unmatched data packets for diagnostics
@@ -524,8 +535,13 @@ impl StrategyEngine {
                 // Parse the ClientHello to find SNI
                 let hello = match packet::tls::TlsClientHello::parse(tcp.payload) {
                     Some(h) if h.has_sni() => h,
-                    Some(_) => {
-                        debug!("TLS ClientHello has no SNI, skipping");
+                    Some(h) => {
+                        if let Some(resume) = h.resume {
+                            self.remember_hello_resume(packet, tcp, resume);
+                            debug!("TLS ClientHello continues past this segment, SNI not in it");
+                        } else {
+                            debug!("TLS ClientHello has no SNI, skipping");
+                        }
                         return PacketAction::Accept;
                     }
                     _ => {
@@ -534,153 +550,7 @@ impl StrategyEngine {
                     }
                 };
 
-                // Check domain filter
-                if let Some(ref sni) = hello.sni {
-                    // Measure whether the parser is extracting hostnames at all.
-                    METRICS.sni_parsed.fetch_add(1, Ordering::Relaxed);
-                    if !packet::tls::is_hostname_syntax(sni) {
-                        METRICS.sni_syntax_invalid.fetch_add(1, Ordering::Relaxed);
-                    }
-
-                    if !self.config.should_process_domain(sni) {
-                        METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
-                        debug!(
-                            domain = %crate::logging::peer(sni.as_str()),
-                            "domain not in filter list, skipping"
-                        );
-                        return PacketAction::Accept;
-                    }
-                    METRICS.domains_matched.fetch_add(1, Ordering::Relaxed);
-                    debug!(
-                        domain = %crate::logging::peer(sni.as_str()),
-                        "domain matched, applying TLS strategy"
-                    );
-                }
-
-                // ── Desync-first approach (Mode 5+): fake CH → multi-fragment → disorder ──
-                // This is the primary bypass technique against advanced DPI systems.
-                //
-                // Strategy:
-                // 1. Send fake RST with wrong TTL → DPI tears down connection tracking
-                // 2. Send fake ClientHello with google.com SNI → DPI reclassifies as "safe"
-                // 3. Send real ClientHello split into 3 fragments, in reverse order (disorder)
-                //
-                // DPI sees: RST(fake) → ClientHello(google.com, fake) → data fragments
-                // Server sees: ClientHello fragments (correct order, reassembled)
-                let use_desync = self.config.strategies.desync_first
-                    && matches!(
-                        self.mode,
-                        BypassMode::AllActive
-                            | BypassMode::Aggressive
-                            | BypassMode::AutoDetect
-                            | BypassMode::Custom
-                    );
-
-                let use_multi_fragment = self.config.strategies.multi_fragment
-                    && matches!(
-                        self.mode,
-                        BypassMode::AllActive
-                            | BypassMode::Aggressive
-                            | BypassMode::AutoDetect
-                            | BypassMode::Custom
-                    );
-
-                let use_disorder = self.config.strategies.disorder
-                    && matches!(
-                        self.mode,
-                        BypassMode::AllActive
-                            | BypassMode::Aggressive
-                            | BypassMode::AutoDetect
-                            | BypassMode::Custom
-                    );
-
-                // Try multi-fragment splitting first (3 segments)
-                let fragments = if use_multi_fragment {
-                    tls_split::split_tls_multi_fragment(
-                        packet.raw,
-                        &packet.ip,
-                        tcp,
-                        &hello,
-                        use_disorder,
-                    )
-                    .or_else(|| {
-                        // Fall back to 2-fragment with disorder
-                        if use_disorder {
-                            tls_split::split_tls_out_of_order(packet.raw, &packet.ip, tcp, &hello)
-                        } else {
-                            tls_split::split_tls_client_hello(
-                                packet.raw,
-                                &packet.ip,
-                                tcp,
-                                &hello,
-                                self.config.strategies.tls_split_position,
-                            )
-                        }
-                    })
-                } else if use_disorder || matches!(self.mode, BypassMode::Aggressive) {
-                    // Aggressive always reorders. It used to re-frame the
-                    // ClientHello as two TLS records instead, which adds a
-                    // 5-byte header the kernel never sent; with neither the
-                    // later segments nor the server's ACKs passing through
-                    // here, nothing could shift sequence numbers to match,
-                    // and every such connection broke.
-                    tls_split::split_tls_out_of_order(packet.raw, &packet.ip, tcp, &hello)
-                } else {
-                    tls_split::split_tls_client_hello(
-                        packet.raw,
-                        &packet.ip,
-                        tcp,
-                        &hello,
-                        self.config.strategies.tls_split_position,
-                    )
-                };
-
-                if let Some(fragments) = fragments {
-                    METRICS.tls_splits.fetch_add(1, Ordering::Relaxed);
-                    if self.fake_enabled() {
-                        let fake_ttl = self.get_fake_ttl(packet.dst_addr(), packet.ttl());
-                        let mut fakes = Vec::new();
-
-                        // Desync-first: inject fake RST + fake ClientHello with harmless SNI
-                        // before the real fragments. This is the key technique against
-                        // advanced DPI (Sandvine/ProcERA class):
-                        //
-                        // 1. Fake RST → DPI tears down connection tracking for this 5-tuple
-                        // 2. Fake ClientHello(google.com) → DPI creates NEW tracking entry
-                        //    classifying this connection as going to google.com (allowed)
-                        // 3. Real fragments arrive → DPI treats as continuation of "google.com"
-                        if use_desync {
-                            // Fake RST to break DPI connection tracking
-                            if let Some(fake_rst) = fake_packet::create_fake_rst_desync(
-                                packet.raw, &packet.ip, tcp, fake_ttl,
-                            ) {
-                                fakes.push(fake_rst);
-                            }
-                        }
-
-                        // Standard fakes (includes fake ClientHello with google.com SNI)
-                        fakes.extend(fake_packet::create_fake_packets(
-                            packet.raw,
-                            &packet.ip,
-                            tcp,
-                            fake_ttl,
-                            &self.config,
-                        ));
-
-                        // In Aggressive mode, add extra fake RST at end too
-                        if matches!(self.mode, BypassMode::Aggressive)
-                            && let Some(fake_rst) = fake_packet::create_fake_rst_desync(
-                                packet.raw, &packet.ip, tcp, fake_ttl,
-                            )
-                        {
-                            fakes.push(fake_rst);
-                        }
-
-                        return PacketAction::InjectAndFragment { fakes, fragments };
-                    }
-                    return PacketAction::Fragment(fragments);
-                }
-                PacketAction::Accept
+                self.split_client_hello(packet, tcp, &hello, false)
             }
             BypassMode::FakePacket => {
                 if let Some(fakes) = self.create_fakes_for(packet, tcp) {
@@ -689,6 +559,228 @@ impl StrategyEngine {
                 PacketAction::Accept
             }
         }
+    }
+
+    fn outbound_flow(
+        packet: &ParsedPacket<'_>,
+        tcp: &packet::tcp::TcpHeader<'_>,
+    ) -> crate::flow_ttl::FlowKey {
+        crate::flow_ttl::FlowKey {
+            server: packet.dst_addr(),
+            client: packet.src_addr(),
+            server_port: tcp.dst_port,
+            client_port: tcp.src_port,
+        }
+    }
+
+    /// Note where this ClientHello's extension walk continues, in sequence
+    /// space, for the segment that will carry the rest.
+    fn remember_hello_resume(
+        &self,
+        packet: &ParsedPacket<'_>,
+        tcp: &packet::tcp::TcpHeader<'_>,
+        resume: packet::tls::ExtensionResume,
+    ) {
+        let Ok(remaining) = u16::try_from(resume.remaining) else {
+            return;
+        };
+        let next_seq = tcp.seq_num.wrapping_add(resume.next as u32);
+        self.hello_resume
+            .store(&Self::outbound_flow(packet, tcp), next_seq, remaining);
+    }
+
+    /// Find the SNI in a segment that continues a ClientHello and split around
+    /// it. `None` hands the segment back to the normal path.
+    fn continue_client_hello(
+        &self,
+        packet: &ParsedPacket<'_>,
+        tcp: &packet::tcp::TcpHeader<'_>,
+    ) -> Option<PacketAction> {
+        let (next_seq, remaining) = self.hello_resume.take(&Self::outbound_flow(packet, tcp))?;
+        // A header before this segment's start means a retransmission or a
+        // reordered segment; there is nothing here to resume from.
+        let next = next_seq.wrapping_sub(tcp.seq_num);
+        if (next as i32) < 0 {
+            return None;
+        }
+        let resume = packet::tls::ExtensionResume {
+            next: next as usize,
+            remaining: remaining as usize,
+        };
+        match packet::tls::continue_extension_walk(tcp.payload, resume) {
+            packet::tls::Continuation::Sni {
+                offset,
+                length,
+                name,
+            } => {
+                debug!("TLS ClientHello SNI found in a continuation segment");
+                let hello =
+                    packet::tls::TlsClientHello::continuation(tcp.payload, name, offset, length);
+                Some(self.split_client_hello(packet, tcp, &hello, true))
+            }
+            packet::tls::Continuation::Resume(next) => {
+                self.remember_hello_resume(packet, tcp, next);
+                None
+            }
+            packet::tls::Continuation::Exhausted => None,
+        }
+    }
+
+    /// Apply the TLS strategy to a segment whose SNI is known: check the domain
+    /// filter, split, and add fakes.
+    ///
+    /// `continuation` marks a segment that carries the SNI of a ClientHello
+    /// whose first segment has already gone out. Fakes and the desync RST are
+    /// left out there — they are built to precede the start of a ClientHello —
+    /// and a fixed split position, which counts from that start, does not apply.
+    fn split_client_hello(
+        &self,
+        packet: &ParsedPacket<'_>,
+        tcp: &packet::tcp::TcpHeader<'_>,
+        hello: &packet::tls::TlsClientHello<'_>,
+        continuation: bool,
+    ) -> PacketAction {
+        let split_position = if continuation {
+            0
+        } else {
+            self.config.strategies.tls_split_position
+        };
+
+        // Check domain filter
+        if let Some(ref sni) = hello.sni {
+            // Measure whether the parser is extracting hostnames at all.
+            METRICS.sni_parsed.fetch_add(1, Ordering::Relaxed);
+            if !packet::tls::is_hostname_syntax(sni) {
+                METRICS.sni_syntax_invalid.fetch_add(1, Ordering::Relaxed);
+            }
+
+            if !self.config.should_process_domain(sni) {
+                METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
+                debug!(
+                    domain = %crate::logging::peer(sni.as_str()),
+                    "domain not in filter list, skipping"
+                );
+                return PacketAction::Accept;
+            }
+            METRICS.domains_matched.fetch_add(1, Ordering::Relaxed);
+            debug!(
+                domain = %crate::logging::peer(sni.as_str()),
+                "domain matched, applying TLS strategy"
+            );
+        }
+
+        // ── Desync-first approach (Mode 5+): fake CH → multi-fragment → disorder ──
+        // This is the primary bypass technique against advanced DPI systems.
+        //
+        // Strategy:
+        // 1. Send fake RST with wrong TTL → DPI tears down connection tracking
+        // 2. Send fake ClientHello with google.com SNI → DPI reclassifies as "safe"
+        // 3. Send real ClientHello split into 3 fragments, in reverse order (disorder)
+        //
+        // DPI sees: RST(fake) → ClientHello(google.com, fake) → data fragments
+        // Server sees: ClientHello fragments (correct order, reassembled)
+        let use_desync = !continuation
+            && self.config.strategies.desync_first
+            && matches!(
+                self.mode,
+                BypassMode::AllActive
+                    | BypassMode::Aggressive
+                    | BypassMode::AutoDetect
+                    | BypassMode::Custom
+            );
+
+        let use_multi_fragment = self.config.strategies.multi_fragment
+            && matches!(
+                self.mode,
+                BypassMode::AllActive
+                    | BypassMode::Aggressive
+                    | BypassMode::AutoDetect
+                    | BypassMode::Custom
+            );
+
+        let use_disorder = self.config.strategies.disorder
+            && matches!(
+                self.mode,
+                BypassMode::AllActive
+                    | BypassMode::Aggressive
+                    | BypassMode::AutoDetect
+                    | BypassMode::Custom
+            );
+
+        // Try multi-fragment splitting first (3 segments)
+        let fragments = if use_multi_fragment {
+            tls_split::split_tls_multi_fragment(packet.raw, &packet.ip, tcp, hello, use_disorder)
+                .or_else(|| {
+                    // Fall back to 2-fragment with disorder
+                    if use_disorder {
+                        tls_split::split_tls_out_of_order(packet.raw, &packet.ip, tcp, hello)
+                    } else {
+                        tls_split::split_tls_client_hello(
+                            packet.raw,
+                            &packet.ip,
+                            tcp,
+                            hello,
+                            split_position,
+                        )
+                    }
+                })
+        } else if use_disorder || matches!(self.mode, BypassMode::Aggressive) {
+            // Aggressive always reorders. It used to re-frame the
+            // ClientHello as two TLS records instead, which adds a
+            // 5-byte header the kernel never sent; with neither the
+            // later segments nor the server's ACKs passing through
+            // here, nothing could shift sequence numbers to match,
+            // and every such connection broke.
+            tls_split::split_tls_out_of_order(packet.raw, &packet.ip, tcp, hello)
+        } else {
+            tls_split::split_tls_client_hello(packet.raw, &packet.ip, tcp, hello, split_position)
+        };
+
+        if let Some(fragments) = fragments {
+            METRICS.tls_splits.fetch_add(1, Ordering::Relaxed);
+            if self.fake_enabled() && !continuation {
+                let fake_ttl = self.get_fake_ttl(packet.dst_addr(), packet.ttl());
+                let mut fakes = Vec::new();
+
+                // Desync-first: inject fake RST + fake ClientHello with harmless SNI
+                // before the real fragments. This is the key technique against
+                // advanced DPI (Sandvine/ProcERA class):
+                //
+                // 1. Fake RST → DPI tears down connection tracking for this 5-tuple
+                // 2. Fake ClientHello(google.com) → DPI creates NEW tracking entry
+                //    classifying this connection as going to google.com (allowed)
+                // 3. Real fragments arrive → DPI treats as continuation of "google.com"
+                if use_desync {
+                    // Fake RST to break DPI connection tracking
+                    if let Some(fake_rst) =
+                        fake_packet::create_fake_rst_desync(packet.raw, &packet.ip, tcp, fake_ttl)
+                    {
+                        fakes.push(fake_rst);
+                    }
+                }
+
+                // Standard fakes (includes fake ClientHello with google.com SNI)
+                fakes.extend(fake_packet::create_fake_packets(
+                    packet.raw,
+                    &packet.ip,
+                    tcp,
+                    fake_ttl,
+                    &self.config,
+                ));
+
+                // In Aggressive mode, add extra fake RST at end too
+                if matches!(self.mode, BypassMode::Aggressive)
+                    && let Some(fake_rst) =
+                        fake_packet::create_fake_rst_desync(packet.raw, &packet.ip, tcp, fake_ttl)
+                {
+                    fakes.push(fake_rst);
+                }
+
+                return PacketAction::InjectAndFragment { fakes, fragments };
+            }
+            return PacketAction::Fragment(fragments);
+        }
+        PacketAction::Accept
     }
 
     fn evaluate_quic(

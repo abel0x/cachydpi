@@ -25,6 +25,86 @@ pub struct TlsClientHello<'a> {
     pub sni_length: Option<usize>,
     /// TLS version from ClientHello
     pub version: u16,
+    /// Where to pick up the extension walk when the SNI was not found because
+    /// the ClientHello continues in a later TCP segment.
+    pub resume: Option<ExtensionResume>,
+}
+
+/// The point an extension walk stopped at because the ClientHello runs past
+/// the end of this TCP segment.
+///
+/// A post-quantum key share makes a ClientHello larger than one segment, and
+/// browsers that shuffle extension order put the SNI after it about half the
+/// time. The first segment then holds no name at all, and the second does not
+/// start with a TLS header, so neither can be recognised on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtensionResume {
+    /// Offset of the next unread extension header, counted from the start of
+    /// this segment's payload. It can lie beyond the payload.
+    pub next: usize,
+    /// Extension bytes from `next` to the end of the extension block.
+    pub remaining: usize,
+}
+
+/// Outcome of continuing an extension walk into a later segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Continuation {
+    /// The SNI host name lies wholly in this segment.
+    Sni {
+        /// Offset of the name within this segment's payload.
+        offset: usize,
+        length: usize,
+        name: String,
+    },
+    /// The walk runs past this segment too.
+    Resume(ExtensionResume),
+    /// No SNI, a malformed block, or a name split across segments.
+    Exhausted,
+}
+
+/// Continue an extension walk in a segment that carries the middle or end of
+/// a ClientHello. `resume.next` is relative to `data`.
+pub fn continue_extension_walk(data: &[u8], resume: ExtensionResume) -> Continuation {
+    let mut pos = resume.next;
+    let mut remaining = resume.remaining;
+    loop {
+        if remaining < 4 {
+            return Continuation::Exhausted;
+        }
+        if pos + 4 > data.len() {
+            return Continuation::Resume(ExtensionResume {
+                next: pos,
+                remaining,
+            });
+        }
+        let ext_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
+        let ext_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+        if 4 + ext_len > remaining {
+            return Continuation::Exhausted;
+        }
+        if ext_type == TLS_EXT_SNI {
+            // list length (2), name type (1), name length (2), name
+            let body = pos + 4;
+            if ext_len < 5 || body + 5 > data.len() || data[body + 2] != 0 {
+                return Continuation::Exhausted;
+            }
+            let length = u16::from_be_bytes([data[body + 3], data[body + 4]]) as usize;
+            let offset = body + 5;
+            if 5 + length > ext_len || offset + length > data.len() {
+                return Continuation::Exhausted;
+            }
+            return match std::str::from_utf8(&data[offset..offset + length]) {
+                Ok(name) => Continuation::Sni {
+                    offset,
+                    length,
+                    name: name.to_lowercase(),
+                },
+                Err(_) => Continuation::Exhausted,
+            };
+        }
+        pos += 4 + ext_len;
+        remaining -= 4 + ext_len;
+    }
 }
 
 impl<'a> TlsClientHello<'a> {
@@ -121,6 +201,7 @@ impl<'a> TlsClientHello<'a> {
                 sni_offset: None,
                 sni_length: None,
                 version: client_version,
+                resume: None,
             });
         }
 
@@ -128,7 +209,11 @@ impl<'a> TlsClientHello<'a> {
         pos += 2;
 
         // Allow partial extensions (TCP may have split the record)
-        let extensions_end = (pos + extensions_len).min(hello.len());
+        let declared_end = pos + extensions_len;
+        let extensions_end = declared_end.min(hello.len());
+        // Offset of `hello` within the TCP payload: record and handshake headers.
+        const HELLO_START: usize = 5 + 4;
+        let mut resume: Option<ExtensionResume> = None;
 
         // Parse extensions looking for SNI
         let mut sni: Option<String> = None;
@@ -142,6 +227,15 @@ impl<'a> TlsClientHello<'a> {
             ext_pos += 4;
 
             if ext_pos + ext_len > extensions_end {
+                // This extension runs into the next segment. Unless it is the
+                // SNI itself, its length says where the next one starts.
+                if ext_type != TLS_EXT_SNI && ext_pos + ext_len <= declared_end {
+                    resume = Some(ExtensionResume {
+                        next: HELLO_START + ext_pos + ext_len,
+                        remaining: declared_end - (ext_pos + ext_len),
+                    });
+                }
+                ext_pos = usize::MAX;
                 break;
             }
 
@@ -175,13 +269,40 @@ impl<'a> TlsClientHello<'a> {
             ext_pos += ext_len;
         }
 
+        // The walk ran out of data between two extensions.
+        if sni.is_none()
+            && ext_pos != usize::MAX
+            && ext_pos < declared_end
+            && declared_end > hello.len()
+        {
+            resume = Some(ExtensionResume {
+                next: HELLO_START + ext_pos,
+                remaining: declared_end - ext_pos,
+            });
+        }
+
         Some(TlsClientHello {
             record,
+            resume: resume.filter(|_| sni.is_none()),
             sni,
             sni_offset,
             sni_length,
             version: client_version,
         })
+    }
+
+    /// A segment carrying the SNI of a ClientHello that began in an earlier
+    /// segment, described with the name's position in this segment's payload
+    /// so the splitters can treat it like a whole one.
+    pub fn continuation(segment: &'a [u8], sni: String, offset: usize, length: usize) -> Self {
+        TlsClientHello {
+            record: segment,
+            sni: Some(sni),
+            sni_offset: Some(offset),
+            sni_length: Some(length),
+            version: 0,
+            resume: None,
+        }
     }
 
     /// Check if this ClientHello contains an SNI extension

@@ -12,7 +12,7 @@
 
 use crate::packet::ip::{self, IpHeader};
 use crate::packet::tcp::{self, TcpHeader};
-use crate::packet::tls::{self, TlsClientHello};
+use crate::packet::tls::TlsClientHello;
 
 use tracing::trace;
 
@@ -63,6 +63,20 @@ fn jitter(range: usize) -> usize {
     }
 }
 
+/// The middle of the SNI value, as an offset into the segment's payload.
+///
+/// Taken from the parsed position rather than by re-parsing the payload, so it
+/// also serves a segment that carries the SNI of a ClientHello begun earlier,
+/// which does not itself start with a TLS header.
+fn sni_midpoint(hello: &TlsClientHello<'_>) -> Option<usize> {
+    let offset = hello.sni_offset?;
+    let length = hello.sni_length?;
+    if offset == 0 || length == 0 {
+        return None;
+    }
+    Some(offset + length / 2)
+}
+
 /// Split a TLS ClientHello packet at the SNI boundary.
 ///
 /// Returns None if:
@@ -93,8 +107,7 @@ pub fn split_tls_client_hello(
         split_position
     } else {
         // Auto: split in the middle of the SNI value
-        let (split, _) = tls::find_sni_split_point(payload)?;
-        split
+        sni_midpoint(hello)?
     };
 
     if split_at == 0 || split_at >= payload.len() {
@@ -156,7 +169,7 @@ pub fn split_tls_out_of_order(
         return None;
     }
 
-    let (split_at, _) = tls::find_sni_split_point(payload)?;
+    let split_at = sni_midpoint(hello)?;
     if split_at == 0 || split_at >= payload.len() {
         return None;
     }

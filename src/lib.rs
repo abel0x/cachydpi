@@ -10,6 +10,7 @@ pub mod config;
 pub mod dpi_detect;
 pub mod flow_ttl;
 pub mod helix;
+pub mod hello_resume;
 pub mod logging;
 pub mod metrics;
 pub mod metrics_server;
