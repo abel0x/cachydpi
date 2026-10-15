@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 abel0x <https://github.com/abel0x>
 # tests/run_all_tests.sh — Master Test Runner for CachyDPI
 #
 # Runs all test categories in order and generates a combined report.

@@ -1,5 +1,7 @@
 #!/bin/bash
-# CachyDPI v1.0.0 Deploy Script
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 abel0x <https://github.com/abel0x>
+# CachyDPI Deploy Script
 # Quick deploy and verify for development/testing
 set -e
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 abel0x <https://github.com/abel0x>
 # tests/test_nftables_isolation.sh — nftables Isolation Tests
 #
 # Tests that CachyDPI's nftables rules don't interfere with Docker,

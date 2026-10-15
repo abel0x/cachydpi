@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 abel0x <https://github.com/abel0x>
 # ═══════════════════════════════════════════════════════════════════
 # CachyDPI Blacklist Test Suite
 # Tests all domains in the blacklist and generates a Markdown report

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 abel0x <https://github.com/abel0x>
 # tests/test_isp_bypass.sh — ISP Bypass Verification Tests
 #
 # Tests that CachyDPI actually bypasses DPI for blacklisted domains.

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 abel0x <https://github.com/abel0x>
 # install.sh — CachyDPI one-command installer for CachyOS
 #
 # Usage: curl -fsSL https://raw.githubusercontent.com/abel0x/cachydpi/main/install.sh | sudo bash
