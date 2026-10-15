@@ -264,12 +264,11 @@ fn build_fake_with_ttl(
     // Add fake payload
     packet.extend_from_slice(fake_payload);
 
-    // Fix IP total length
-    packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-
-    // Set fake TTL
+    // Set length and fake TTL. IPv6 keeps its flow label where IPv4 keeps the
+    // total length, so the length is written per version.
     let version = (packet[0] >> 4) & 0x0F;
     if version == 4 {
+        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
         packet[8] = ttl;
         // Recalculate IP checksum
         packet[10] = 0;

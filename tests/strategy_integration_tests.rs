@@ -1314,6 +1314,57 @@ mod fake_packet_tests {
         }
     }
 
+    /// An IPv6 fake must share the real packet's version, traffic class and
+    /// flow label. The flow label sits where IPv4 keeps its total length, and
+    /// writing a length there gave every fake a label of its own — a field
+    /// that sets it apart from the real segment for any observer, and one
+    /// routers hash to choose a path, so the fake could take a different one.
+    #[test]
+    fn ipv6_fakes_keep_the_flow_label() {
+        let payload = build_tls_client_hello("example.com");
+        let mut tcp_seg = tcp::build_tcp_header(
+            12345,
+            443,
+            1000,
+            500,
+            tcp::TCP_PSH | tcp::TCP_ACK,
+            65535,
+            &payload,
+        );
+        let mut pkt = vec![0u8; 40];
+        pkt[0..4].copy_from_slice(&((6u32 << 28) | (0x2A << 20) | 0xABCDE).to_be_bytes());
+        pkt[4..6].copy_from_slice(&(tcp_seg.len() as u16).to_be_bytes());
+        pkt[6] = ip::PROTO_TCP;
+        pkt[7] = 64;
+        pkt[8] = 0xfd;
+        pkt[23] = 1;
+        pkt[24] = 0x26;
+        pkt[39] = 1;
+        let src: [u8; 16] = pkt[8..24].try_into().unwrap();
+        let dst: [u8; 16] = pkt[24..40].try_into().unwrap();
+        let cksum = tcp::tcp_checksum_v6(&src, &dst, &tcp_seg);
+        tcp::set_tcp_checksum(&mut tcp_seg, cksum);
+        pkt.extend_from_slice(&tcp_seg);
+
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+        let tcp_hdr = parsed.tcp().unwrap();
+        let mut fakes = fake_packet::create_fake_packets(
+            &pkt,
+            &parsed.ip,
+            tcp_hdr,
+            3,
+            &config_with_fake_packets(),
+        );
+        fakes.extend(fake_packet::create_fake_rst_desync(&pkt, &parsed.ip, tcp_hdr, 3));
+        assert!(!fakes.is_empty());
+
+        for fake in &fakes {
+            assert_eq!(fake[0..4], pkt[0..4], "version, traffic class and flow label");
+            let declared = u16::from_be_bytes([fake[4], fake[5]]) as usize;
+            assert_eq!(declared, fake.len() - 40, "payload length");
+        }
+    }
+
     #[test]
     fn fake_rst_desync_has_rst_flag() {
         let pkt = build_tls_packet("example.com", 64);
