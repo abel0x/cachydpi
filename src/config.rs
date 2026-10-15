@@ -236,21 +236,28 @@ impl Default for LogConfig {
 /// Release that removed the `whitelist` spelling, quoted in the refusal.
 const WHITELIST_REMOVED_IN: &str = "1.2.0";
 
-/// Whether a config still spells the exemption list the pre-1.1.0 way.
+/// Whether a config still relies on the pre-1.1.0 `whitelist` spelling.
 ///
-/// Checked on the raw text before parsing: with the aliases gone, serde would
-/// otherwise report only an unknown variant or field, and say nothing of what
-/// it became.
+/// Checked before the typed parse: with the aliases gone, serde would report
+/// `mode = "whitelist"` only as an unknown variant, and would silently ignore
+/// a `whitelist` list or `whitelist_file` — losing the operator's exemptions
+/// without a word. An empty `whitelist = []` carries nothing and is let
+/// through: the config shipped with 1.0.x has exactly that line, and refusing
+/// it would stop every untouched 1.0.x install for a no-op.
 fn config_uses_removed_whitelist_spelling(content: &str) -> bool {
-    content.lines().any(|line| {
-        let line = line.trim();
-        if line.starts_with('#') {
-            return false;
-        }
-        line.contains("whitelist_file")
-            || line.starts_with("whitelist")
-            || (line.starts_with("mode") && line.contains("\"whitelist\""))
-    })
+    let Ok(value) = content.parse::<toml::Table>() else {
+        // Malformed TOML is reported by the typed parse, with its location.
+        return false;
+    };
+    let Some(domains) = value.get("domains").and_then(|d| d.as_table()) else {
+        return false;
+    };
+    domains.get("mode").and_then(|m| m.as_str()) == Some("whitelist")
+        || domains.contains_key("whitelist_file")
+        || domains
+            .get("whitelist")
+            .and_then(|w| w.as_array())
+            .is_some_and(|list| !list.is_empty())
 }
 
 impl Config {
@@ -912,6 +919,30 @@ mod load_tests {
                 "refusal must name the replacement and the release: {err}"
             );
         }
+    }
+
+    /// The config shipped with 1.0.x carries `whitelist = []`. It says
+    /// nothing, and an install that never edited it must keep starting.
+    #[test]
+    fn the_empty_whitelist_line_from_the_1_0_config_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[domains]\n# Inline whitelist (skip these domains)\nmode = \"blacklist\"\nwhitelist = []\n",
+        )
+        .unwrap();
+        let config = Config::load(&path).expect("an empty leftover list must not block startup");
+        assert_eq!(config.domains.mode, DomainMode::Blacklist);
+    }
+
+    /// A non-empty list under the old name would otherwise vanish silently.
+    #[test]
+    fn a_non_empty_whitelist_list_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[domains]\nmode = \"blacklist\"\nwhitelist = [\"a.com\"]\n").unwrap();
+        assert!(Config::load(&path).is_err());
     }
 
     /// A comment that mentions the old name is not a use of it.
