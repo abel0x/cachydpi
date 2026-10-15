@@ -14,6 +14,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   later segments nor the server's ACKs pass through the queue, the sequence
   numbers could never be brought back in line and the connection stalled. It
   now sends the ClientHello out of order, byte-for-byte as the kernel wrote it.
+- A server's own RST is no longer dropped as forged. A Linux RST has window 0
+  and no options — every sign the shape check looked for — so refused
+  connections hung until a connect timeout and real resets never arrived. An
+  RST is now judged against the TTL of its connection's SYN-ACK: one arriving
+  from a nearer hop than the server is injected, one at the server's hop count
+  is passed, and one answering a SYN that got no SYN-ACK is a refusal and is
+  passed. The shape check remains only for connections with no record. The
+  per-connection record is a fixed 32 KiB table that holds hashes, not
+  addresses.
 
 ## [1.1.0] — 2026-08-12
 

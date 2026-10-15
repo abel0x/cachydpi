@@ -7,8 +7,30 @@
 // - HTTP 302/301 redirects that arrive too fast
 // - ICMP unreachable messages
 
+use crate::flow_ttl::FlowTtl;
 use crate::packet::{ParsedPacket, http};
 use tracing::trace;
+
+/// How far an RST's TTL may stray from the server's SYN-ACK and still count as
+/// the server's. Paths can shift by a hop between packets; an injecting DPI
+/// box sits several hops closer than the server.
+const SERVER_HOP_TOLERANCE: u8 = 1;
+
+/// Whether an RST was injected rather than sent by the server, given what is
+/// known of its connection.
+///
+/// Where the server's SYN-ACK was seen, its TTL decides: the shape of an RST
+/// cannot, since a Linux server's own RST has window 0 and no options. An RST
+/// answering a SYN that got no SYN-ACK is a refused connection and is left
+/// alone, so it fails at once instead of waiting out a connect timeout. Only
+/// a connection with no record falls back to scoring the packet's shape.
+pub fn is_forged_rst_on_flow(packet: &ParsedPacket<'_>, flow: FlowTtl) -> bool {
+    match flow {
+        FlowTtl::Server(ttl) => packet.ttl().abs_diff(ttl) > SERVER_HOP_TOLERANCE,
+        FlowTtl::AwaitingSynAck => false,
+        FlowTtl::Unknown => is_forged_rst(packet),
+    }
+}
 
 /// Check if a TCP RST packet looks forged by DPI.
 ///

@@ -8,6 +8,7 @@ pub mod cardinality;
 pub mod cli;
 pub mod config;
 pub mod dpi_detect;
+pub mod flow_ttl;
 pub mod helix;
 pub mod logging;
 pub mod metrics;

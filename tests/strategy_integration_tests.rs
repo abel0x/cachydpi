@@ -883,6 +883,81 @@ mod evaluate_inbound {
         );
     }
 
+    /// The SYN this client sent for the flow `build_rst_packet` answers.
+    fn build_client_syn() -> Vec<u8> {
+        build_ipv4_tcp_packet(
+            Ipv4Addr::new(192, 168, 1, 100),
+            Ipv4Addr::new(93, 184, 216, 34),
+            12345,
+            443,
+            1000,
+            0,
+            tcp::TCP_SYN,
+            64,
+            &[],
+        )
+    }
+
+    fn inbound(engine: &StrategyEngine, pkt: &[u8]) -> PacketAction {
+        engine.evaluate_inbound(&ParsedPacket::parse(pkt, Direction::Inbound).unwrap())
+    }
+
+    /// A Linux server's own RST has window 0 and no options, which is every
+    /// indicator the scoring looks for. Arriving at the hop count the server's
+    /// SYN-ACK did is what shows it came from the server.
+    #[test]
+    fn rst_at_the_servers_hop_count_is_accepted() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        assert!(matches!(inbound(&engine, &build_syn_ack_packet(52)), PacketAction::Accept));
+        for flags in [tcp::TCP_RST, tcp::TCP_RST | tcp::TCP_ACK] {
+            let action = inbound(&engine, &build_rst_packet(0, 52, flags, &[]));
+            assert!(
+                matches!(action, PacketAction::Accept),
+                "server's own RST must reach the kernel: {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rst_from_closer_than_the_server_is_dropped() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        inbound(&engine, &build_syn_ack_packet(44));
+        // Even one that looks like a textbook real RST: window, timestamps.
+        let ts = [0x08, 0x0A, 0, 1, 2, 3, 0, 4, 5, 6];
+        let action = inbound(&engine, &build_rst_packet(32768, 58, tcp::TCP_RST, &ts));
+        assert!(
+            matches!(action, PacketAction::Drop),
+            "RST from a nearer hop than the server is injected: {action:?}"
+        );
+    }
+
+    #[test]
+    fn one_hop_of_path_jitter_is_tolerated() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        inbound(&engine, &build_syn_ack_packet(52));
+        let action = inbound(&engine, &build_rst_packet(0, 51, tcp::TCP_RST, &[]));
+        assert!(matches!(action, PacketAction::Accept), "{action:?}");
+    }
+
+    /// A refused connection — nothing listening — answers the SYN with an RST
+    /// and never sends a SYN-ACK. Dropping it leaves the application waiting
+    /// out a connect timeout instead of failing at once.
+    #[test]
+    fn rst_answering_a_syn_is_accepted() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        engine.evaluate_outbound(
+            &ParsedPacket::parse(&build_client_syn(), Direction::Outbound).unwrap(),
+        );
+        let action = inbound(
+            &engine,
+            &build_rst_packet(0, 64, tcp::TCP_RST | tcp::TCP_ACK, &[]),
+        );
+        assert!(
+            matches!(action, PacketAction::Accept),
+            "connection refused must not become a timeout: {action:?}"
+        );
+    }
+
     #[test]
     fn passive_disabled_in_non_passive_modes() {
         // HttpFragment (mode 2) doesn't have passive detection

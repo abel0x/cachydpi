@@ -163,6 +163,9 @@ pub struct StrategyEngine {
     /// address is retained, the state cannot grow, and with nothing to exhaust
     /// there is no saturation to report.
     forged_rst_sources: Mutex<crate::cardinality::DistinctCounter>,
+    /// The hop count each connection's server answered from, to tell its own
+    /// RST from one injected on the path.
+    flows: crate::flow_ttl::FlowTtlTable,
 }
 
 impl StrategyEngine {
@@ -173,6 +176,7 @@ impl StrategyEngine {
             auto_ttl: AtomicU8::new(0),
             ttl_cache: Mutex::new(HashMap::new()),
             forged_rst_sources: Mutex::new(crate::cardinality::DistinctCounter::new()),
+            flows: crate::flow_ttl::FlowTtlTable::new(),
         }
     }
 
@@ -204,6 +208,15 @@ impl StrategyEngine {
                 return PacketAction::Accept;
             }
         };
+
+        if tcp.is_syn() && self.passive_enabled() {
+            self.flows.syn_sent(&crate::flow_ttl::FlowKey {
+                server: packet.dst_addr(),
+                client: packet.src_addr(),
+                server_port: tcp.dst_port,
+                client_port: tcp.src_port,
+            });
+        }
 
         // — SYN packets: optionally modify window size —
         if tcp.is_syn() && self.should_modify_window() {
@@ -264,8 +277,18 @@ impl StrategyEngine {
             None => return PacketAction::Accept,
         };
 
+        let flow = crate::flow_ttl::FlowKey {
+            server: packet.src_addr(),
+            client: packet.dst_addr(),
+            server_port: tcp.src_port,
+            client_port: tcp.dst_port,
+        };
+        if tcp.is_syn_ack() {
+            self.flows.syn_ack_received(&flow, packet.ttl());
+        }
+
         // Check for forged RST packets
-        if tcp.is_rst() && passive::is_forged_rst(packet) {
+        if tcp.is_rst() && passive::is_forged_rst_on_flow(packet, self.flows.lookup(&flow)) {
             METRICS.forged_rst_drops.fetch_add(1, Ordering::Relaxed);
             self.record_forged_rst_source(packet.src_addr());
             METRICS.push_event(
