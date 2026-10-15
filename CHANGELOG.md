@@ -5,6 +5,26 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-10-15
+
+### Added
+
+- **Mode 7 is implemented: adaptive escalation per site.** It was documented
+  as not implemented and behaved as mode 5. It now starts each site on the
+  techniques the config arms and, each time one of the site's connections
+  draws interference that passive defence catches (a forged RST, TLS alert or
+  redirect), moves that site up a level: (1) reordered three-way split,
+  (2) plus fake packets, (3) plus the desync RST, then back to the configured
+  techniques. Several forged packets on one connection count once. Levels are
+  kept as hashed tags, not addresses, and reset on restart.
+- Fake packets take their TTL from the connection's own SYN-ACK when auto-TTL
+  is on and it was seen, which is exact for that server.
+- An `escalations` metric, shown in the monitor.
+
+### Removed
+
+- The startup warning that mode 7 is not implemented.
+
 ## [1.4.0] — 2026-10-15
 
 ### Added
