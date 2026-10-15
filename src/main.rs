@@ -384,15 +384,44 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
             Ok(())
         }
         Commands::Detect { domain } => {
-            println!("Running DPI detection against {}...", domain);
-            let result = cachydpi::dpi_detect::detect_dpi(domain)?;
-            println!("\n── DPI Detection Results ──");
-            println!("DPI Type:           {:?}", result.dpi_type);
-            println!("RST Injection:      {}", result.rst_injection);
-            println!("Redirect Injection: {}", result.redirect_injection);
-            println!("Estimated TTL:      {:?}", result.dpi_ttl);
-            println!("ISP Hint:           {:?}", result.isp_hint);
-            println!("Recommended Mode:   -m {}", result.recommended_mode);
+            let running = std::process::Command::new("systemctl")
+                .args(["is-active", "--quiet", "cachydpi"])
+                .status()
+                .is_ok_and(|s| s.success());
+            if running {
+                println!(
+                    "Note: the CachyDPI service is running, so these results show the \
+                     network with the bypass in place. Stop it first to see the blocking itself."
+                );
+            }
+            println!("Probing {domain}...");
+            let r = cachydpi::dpi_detect::detect_dpi(domain)?;
+            println!("\n── Results ──");
+            println!(
+                "Address:        {} ({} ms away)",
+                r.address,
+                r.rtt.as_millis()
+            );
+            println!("Neutral SNI:    {:?}", r.control);
+            println!("{domain}: {:?}", r.target);
+            println!("Verdict:        {}", r.verdict.describe());
+            match r.http_redirect_injected {
+                Some(true) => {
+                    println!("Plain HTTP:     an injected redirect or block page came back")
+                }
+                Some(false) => println!("Plain HTTP:     no injected redirect seen"),
+                None => println!("Plain HTTP:     not tested (port 80 unreachable)"),
+            }
+            print_dns_status(&cachydpi::dns::status());
+            println!(
+                "Recommended:    -m {}{}",
+                r.recommended_mode,
+                if r.recommended_mode == 7 {
+                    " (adaptive: escalates for sites where interference continues)"
+                } else {
+                    ""
+                }
+            );
             Ok(())
         }
         Commands::Monitor { socket } => {
