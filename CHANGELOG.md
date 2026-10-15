@@ -5,6 +5,27 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-10-15
+
+### Added
+
+- **`[strategies] fake_ttl_max`** (default 4): the highest TTL auto-detection
+  may give a fake packet. A fixed `fake_packet_ttl` is not limited by it.
+  Raise it only if your DPI sits further out and blocked sites stay
+  blocked. Existing configs get the default without changes.
+
+### Fixed
+
+- **Fake packets no longer reset connections to unblocked sites.**
+  Auto-TTL measured the path back from the server, which can be much
+  longer than the path there; fakes timed from it reached the server.
+  On such a network mode 4 reset about 1 in 9 requests to unblocked
+  sites, and nearly every request to those behind Akamai and Google
+  edges. This affects mode 4 and mode 7's second level.
+- **Mode 7 no longer escalates healthy sites.** It looked for the server's
+  answer only in the first 4 reply packets, which the server's ACKs for a
+  split ClientHello could fill. A teardown RST then counted as a block.
+
 ## [1.8.0] — 2026-10-15
 
 ### Added
