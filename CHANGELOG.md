@@ -5,6 +5,23 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-10-15
+
+### Changed
+
+- **Fake packets are timed from their own connection.** Their TTL now comes
+  from the SYN-ACK of the connection they belong to, rather than from a table
+  of up to 1024 server addresses. It is exact per connection, and no peer
+  address is held in memory anywhere in the daemon any more.
+- The `ttl_cache_entries` metric and the monitor's cache field are removed
+  with the cache.
+
+### Fixed
+
+- Mode 4 (fake packets) measures its fake TTL. It never read SYN-ACKs, since
+  that happened only with passive defence on, and always fell back to an
+  estimate.
+
 ## [1.5.1] — 2026-10-15
 
 ### Fixed
