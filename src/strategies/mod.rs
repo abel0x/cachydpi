@@ -584,19 +584,13 @@ impl StrategyEngine {
                             )
                         }
                     })
-                } else if matches!(self.mode, BypassMode::Aggressive) {
-                    // Aggressive mode: TLS record-layer fragmentation
-                    tls_split::split_tls_record_layer(
-                        packet.raw,
-                        &packet.ip,
-                        tcp,
-                        &hello,
-                        self.config.strategies.tls_split_position,
-                    )
-                    .or_else(|| {
-                        tls_split::split_tls_out_of_order(packet.raw, &packet.ip, tcp, &hello)
-                    })
-                } else if use_disorder {
+                } else if use_disorder || matches!(self.mode, BypassMode::Aggressive) {
+                    // Aggressive always reorders. It used to re-frame the
+                    // ClientHello as two TLS records instead, which adds a
+                    // 5-byte header the kernel never sent; with neither the
+                    // later segments nor the server's ACKs passing through
+                    // here, nothing could shift sequence numbers to match,
+                    // and every such connection broke.
                     tls_split::split_tls_out_of_order(packet.raw, &packet.ip, tcp, &hello)
                 } else {
                     tls_split::split_tls_client_hello(

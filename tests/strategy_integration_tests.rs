@@ -374,6 +374,70 @@ mod evaluate_outbound_tls {
         );
     }
 
+    /// Whatever a mode does to a ClientHello, the segments it sends must carry
+    /// exactly the bytes the kernel sent, at the sequence numbers the kernel
+    /// assigned them. NFQUEUE sees only the first packets of a connection and
+    /// none of the server's ACKs, so a byte added or lost here can never be
+    /// accounted for later: the server's view of the stream and the kernel's
+    /// part ways and the connection dies.
+    #[test]
+    fn every_mode_preserves_the_tcp_byte_stream() {
+        let original = build_tls_packet("example.com", 64);
+        let parsed = ParsedPacket::parse(&original, Direction::Outbound).unwrap();
+        let tcp = parsed.tcp().unwrap();
+        let (seq, payload) = (tcp.seq_num, tcp.payload.to_vec());
+
+        let modes = [
+            BypassMode::Passive,
+            BypassMode::HttpFragment,
+            BypassMode::TlsFragment,
+            BypassMode::FakePacket,
+            BypassMode::AllActive,
+            BypassMode::Aggressive,
+            BypassMode::AutoDetect,
+        ];
+        for mode in modes {
+            for (multi_fragment, disorder) in
+                [(true, true), (true, false), (false, true), (false, false)]
+            {
+                let mut cfg = default_config();
+                cfg.strategies.multi_fragment = multi_fragment;
+                cfg.strategies.disorder = disorder;
+                let engine = StrategyEngine::new(mode, cfg);
+                let fragments = match engine.evaluate_outbound(&parsed) {
+                    PacketAction::Fragment(f) => f,
+                    PacketAction::InjectAndFragment { fragments, .. } => fragments,
+                    _ => continue,
+                };
+
+                let mut segments: Vec<(u32, Vec<u8>)> = fragments
+                    .iter()
+                    .map(|f| {
+                        let p = ParsedPacket::parse(f, Direction::Outbound).unwrap();
+                        let t = p.tcp().unwrap();
+                        (t.seq_num, t.payload.to_vec())
+                    })
+                    .collect();
+                segments.sort_by_key(|(s, _)| *s);
+
+                let mut next = seq;
+                let mut sent = Vec::new();
+                for (s, data) in &segments {
+                    assert_eq!(
+                        *s, next,
+                        "{mode:?} multi={multi_fragment} disorder={disorder}: gap or overlap in sequence space"
+                    );
+                    next = next.wrapping_add(data.len() as u32);
+                    sent.extend_from_slice(data);
+                }
+                assert_eq!(
+                    sent, payload,
+                    "{mode:?} multi={multi_fragment} disorder={disorder}: sent bytes differ from the kernel's"
+                );
+            }
+        }
+    }
+
     #[test]
     fn tls_no_sni_is_accepted() {
         // Build a TLS ClientHello with no SNI extension

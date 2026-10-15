@@ -5,6 +5,16 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Mode 6 no longer breaks TLS connections. It re-framed the ClientHello as two
+  TLS records, which adds five bytes the kernel never sent; since neither the
+  later segments nor the server's ACKs pass through the queue, the sequence
+  numbers could never be brought back in line and the connection stalled. It
+  now sends the ClientHello out of order, byte-for-byte as the kernel wrote it.
+
 ## [1.1.0] — 2026-08-12
 
 This release tightens how the domain filter is configured. **It can stop an
