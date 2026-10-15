@@ -5,6 +5,21 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-10-15
+
+### Changed
+
+- **`cachydpi detect` compares the site with a neutral name on the same
+  address.** Only the difference is attributed to the network, reported as
+  not blocked, reset by DPI, cut off, silently dropped, or blocked by address.
+  Timing is judged against the measured round trip rather than a fixed 100 ms.
+- It recommends mode 7 where interference was seen and mode 5 otherwise. It
+  used to recommend mode 1 — no fragmentation at all — whenever it saw
+  nothing, which a silently dropped site produces.
+- The probe sends a ClientHello that servers answer with a ServerHello, the
+  output includes the DNS state, and it notes when the service is running.
+- The never-filled DPI TTL field and the ISP guess are removed.
+
 ## [1.6.0] — 2026-10-15
 
 ### Changed
