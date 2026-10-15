@@ -5,6 +5,16 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-10-15
+
+### Fixed
+
+- **A config carried over from 1.0.x starts again.** The config shipped with
+  1.0.x contains an empty `whitelist = []` line, and since 1.2.0 that alone
+  stopped the daemon from starting. An empty list is now ignored; the old
+  spelling is refused only where it would change behaviour — `mode =
+  "whitelist"`, `whitelist_file`, or a `whitelist` list with entries.
+
 ## [1.3.0] — 2026-10-15
 
 The daemon now handles only the packets it can act on, and passive defence
