@@ -26,8 +26,39 @@ use cachydpi::metrics::{DEFAULT_METRICS_SOCKET, FALLBACK_METRICS_SOCKET, Metrics
 struct App {
     snapshot: Option<MetricsSnapshot>,
     prev_snapshot: Option<MetricsSnapshot>,
-    error: Option<String>,
+    error: Option<FetchError>,
     socket_path: String,
+}
+
+/// Why no snapshot came back.
+enum FetchError {
+    /// The daemon could not be reached.
+    Unreachable(String),
+    /// The daemon answered with metrics this monitor cannot read: the two
+    /// were built from different releases. Reported as "disconnected" before,
+    /// which sent people looking for a daemon that was running fine.
+    Incompatible {
+        daemon_version: Option<String>,
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchError::Unreachable(e) => write!(f, "{e}"),
+            FetchError::Incompatible {
+                daemon_version,
+                detail,
+            } => write!(
+                f,
+                "daemon {} sends metrics monitor {} cannot read — install the \
+                 cachydpi-monitor built with the daemon ({detail})",
+                daemon_version.as_deref().unwrap_or("of unknown version"),
+                env!("CARGO_PKG_VERSION"),
+            ),
+        }
+    }
 }
 
 impl App {
@@ -150,17 +181,27 @@ fn run() -> io::Result<()> {
 
 // ── Socket client ──
 
-fn fetch_snapshot(path: &str) -> Result<MetricsSnapshot, String> {
-    let stream = UnixStream::connect(path).map_err(|e| format!("connect: {}", e))?;
+fn fetch_snapshot(path: &str) -> Result<MetricsSnapshot, FetchError> {
+    let unreachable = |what: &str, e: io::Error| FetchError::Unreachable(format!("{what}: {e}"));
+    let stream = UnixStream::connect(path).map_err(|e| unreachable("connect", e))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
-        .map_err(|e| format!("timeout: {}", e))?;
+        .map_err(|e| unreachable("timeout", e))?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader
         .read_line(&mut line)
-        .map_err(|e| format!("read: {}", e))?;
-    serde_json::from_str(&line).map_err(|e| format!("parse: {}", e))
+        .map_err(|e| unreachable("read", e))?;
+    parse_snapshot(&line)
+}
+
+fn parse_snapshot(line: &str) -> Result<MetricsSnapshot, FetchError> {
+    serde_json::from_str(line).map_err(|e| FetchError::Incompatible {
+        daemon_version: serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| v.get("version")?.as_str().map(str::to_owned)),
+        detail: e.to_string(),
+    })
 }
 
 fn find_socket() -> Option<String> {
@@ -209,6 +250,8 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             ("● IDLE", Color::Yellow)
         }
+    } else if let Some(FetchError::Incompatible { .. }) = app.error {
+        ("● VERSION MISMATCH", Color::Yellow)
     } else if app.error.is_some() {
         ("● DISCONNECTED", Color::Red)
     } else {
@@ -756,4 +799,28 @@ fn fmt_timestamp(epoch_ms: u64) -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a 1.0 monitor met from a 1.1 daemon: a field that became
+    /// nullable. It must read as a version mismatch naming the daemon's
+    /// version, not as a dead daemon.
+    #[test]
+    fn unreadable_metrics_are_a_version_mismatch() {
+        let err = parse_snapshot(r#"{"version":"9.9.9","service":{"domains_loaded":"x"}}"#)
+            .expect_err("must not parse");
+        assert!(
+            matches!(&err, FetchError::Incompatible { daemon_version: Some(v), .. } if v == "9.9.9")
+        );
+        assert!(err.to_string().contains("9.9.9"));
+    }
+
+    #[test]
+    fn the_snapshot_this_build_writes_reads_back() {
+        let line = serde_json::to_string(&cachydpi::metrics::METRICS.snapshot()).unwrap();
+        assert!(parse_snapshot(&line).is_ok());
+    }
 }

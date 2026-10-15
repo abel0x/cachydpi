@@ -44,6 +44,14 @@ check:
 # Install to system (run 'make release' first, then 'sudo make install')
 install:
 	$(INSTALL) -Dm755 target/release/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
+	@# The monitor reads the daemon's metrics format, which changes between
+	@# releases: one left behind from an older install reports a running
+	@# daemon as disconnected. Install it with the daemon whenever it was built.
+	@if [ -e target/release/$(BINARY)-monitor ]; then \
+		$(INSTALL) -Dm755 target/release/$(BINARY)-monitor $(DESTDIR)$(PREFIX)/bin/$(BINARY)-monitor; \
+	else \
+		echo "note: $(BINARY)-monitor not built (--no-default-features?); an older one may be left in place"; \
+	fi
 	@# Never replace a config already in place: it holds operator choices and
 	@# an upgrade that resets them changes behaviour without failing loudly.
 	@if [ -e $(DESTDIR)$(SYSCONFDIR)/cachydpi/config.toml ]; then \
@@ -73,6 +81,7 @@ uninstall:
 	systemctl stop cachydpi 2>/dev/null || true
 	systemctl disable cachydpi 2>/dev/null || true
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINARY)
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINARY)-monitor
 	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/cachydpi.service
 	rm -f $(DESTDIR)$(PREFIX)/lib/sysusers.d/cachydpi.conf
 	rm -f $(DESTDIR)$(PREFIX)/lib/tmpfiles.d/cachydpi.conf

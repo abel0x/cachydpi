@@ -70,7 +70,7 @@ sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/cachydpi.conf
 sudo systemctl daemon-reload
 ```
 
-The `cachydpi-monitor` TUI binary is not installed by `make install`; after a release build it is at `target/release/cachydpi-monitor` (or install it from the AUR package). Build without the monitor entirely with `cargo build --release --no-default-features`.
+`make install` installs the `cachydpi-monitor` TUI next to the daemon whenever it was built, which it is by default. Keep the two from the same build: the metrics format changes between releases, and a monitor older than the daemon shows **VERSION MISMATCH**. Build without the monitor entirely with `cargo build --release --no-default-features`.
 
 ## nftables rules
 

@@ -10,11 +10,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Destinations are overridable so the script can be exercised against a
 # sandbox instead of the live system.
 BIN_DEST="${CACHYDPI_BIN_DEST:-/usr/bin/cachydpi}"
+MONITOR_DEST="${CACHYDPI_MONITOR_DEST:-$(dirname "$BIN_DEST")/cachydpi-monitor}"
 CONFIG_DEST="${CACHYDPI_CONFIG_DEST:-/etc/cachydpi/config.toml}"
 
 echo "=== CachyDPI Deploy ==="
 echo "Deploying binary..."
 install -Dm755 "$SCRIPT_DIR/target/release/cachydpi" "$BIN_DEST"
+# The monitor has to match the daemon: the metrics format changes between
+# releases, and an old monitor shows a running daemon as disconnected.
+if [[ -e "$SCRIPT_DIR/target/release/cachydpi-monitor" ]]; then
+    install -Dm755 "$SCRIPT_DIR/target/release/cachydpi-monitor" "$MONITOR_DEST"
+else
+    echo "  note: cachydpi-monitor not built; an older one may be left in place"
+fi
 
 # Never overwrite a config that is already in place. It holds operator
 # choices — the domain filter mode above all — and replacing it does not
