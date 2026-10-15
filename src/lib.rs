@@ -12,7 +12,6 @@ pub mod dpi_detect;
 pub mod escalation;
 pub mod flow_ttl;
 pub mod handshake_watch;
-pub mod helix;
 pub mod hello_resume;
 pub mod logging;
 pub mod metrics;
@@ -23,6 +22,7 @@ pub mod privileges;
 pub mod rawsocket;
 pub mod rules;
 pub mod settings;
+pub mod shelby;
 pub mod strategies;
 
 /// Test-support helpers.

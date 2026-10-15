@@ -469,8 +469,12 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
         }
         Commands::Settings => settings::run_settings(config, config_path),
         Commands::Dns { action } => run_dns(action),
-        Commands::Helix => {
-            print!("{}", cachydpi::helix::render());
+        Commands::Shelby => {
+            use std::io::IsTerminal;
+            print!(
+                "{}",
+                cachydpi::shelby::render(std::io::stdout().is_terminal())
+            );
             Ok(())
         }
     }

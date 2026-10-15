@@ -149,7 +149,7 @@ pub enum Commands {
     },
     // Not advertised in help, the README, or mode_description.
     #[command(hide = true)]
-    Helix,
+    Shelby,
 }
 
 #[derive(Subcommand, Debug)]
@@ -240,8 +240,8 @@ mod tests {
 
     #[test]
     fn hidden_subcommand_still_parses() {
-        let cli = parse(&["helix"]);
-        assert!(matches!(cli.command, Some(Commands::Helix)));
+        let cli = parse(&["shelby"]);
+        assert!(matches!(cli.command, Some(Commands::Shelby)));
     }
 
     #[test]
@@ -249,7 +249,7 @@ mod tests {
         use clap::CommandFactory;
         let help = Cli::command().render_long_help().to_string();
         assert!(
-            !help.to_lowercase().contains("helix"),
+            !help.to_lowercase().contains("shelby"),
             "hidden subcommand leaked into help output"
         );
     }
