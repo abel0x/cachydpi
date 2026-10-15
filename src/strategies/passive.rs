@@ -16,20 +16,59 @@ use tracing::trace;
 /// box sits several hops closer than the server.
 const SERVER_HOP_TOLERANCE: u8 = 1;
 
-/// Whether an RST was injected rather than sent by the server, given what is
-/// known of its connection.
+/// What the connection's hop count says about an inbound packet: `Some(true)`
+/// if it came from nearer than the server, `Some(false)` if it is the
+/// server's, `None` if the connection has no record.
 ///
-/// Where the server's SYN-ACK was seen, its TTL decides: the shape of an RST
-/// cannot, since a Linux server's own RST has window 0 and no options. An RST
-/// answering a SYN that got no SYN-ACK is a refused connection and is left
-/// alone, so it fails at once instead of waiting out a connect timeout. Only
-/// a connection with no record falls back to scoring the packet's shape.
-pub fn is_forged_rst_on_flow(packet: &ParsedPacket<'_>, flow: FlowTtl) -> bool {
+/// Where the server's SYN-ACK was seen, its TTL is the reference: an injecting
+/// DPI box sits closer, so its packets arrive with more TTL left, whatever
+/// they look like. Before any SYN-ACK nothing can have been injected into a
+/// handshake that has not happened; an RST there is the server refusing the
+/// connection, and is left alone so it fails at once instead of waiting out a
+/// connect timeout.
+pub fn injected_by_hop_count(packet: &ParsedPacket<'_>, flow: FlowTtl) -> Option<bool> {
     match flow {
-        FlowTtl::Server(ttl) => packet.ttl().abs_diff(ttl) > SERVER_HOP_TOLERANCE,
-        FlowTtl::AwaitingSynAck => false,
-        FlowTtl::Unknown => is_forged_rst(packet),
+        FlowTtl::Server(ttl) => Some(packet.ttl().abs_diff(ttl) > SERVER_HOP_TOLERANCE),
+        FlowTtl::AwaitingSynAck => Some(false),
+        FlowTtl::Unknown => None,
     }
+}
+
+/// Whether an RST was injected rather than sent by the server.
+///
+/// The shape of an RST cannot decide this — a Linux server's own RST has
+/// window 0 and no options — so the shape score is only the fallback for a
+/// connection with no record.
+pub fn is_forged_rst_on_flow(packet: &ParsedPacket<'_>, flow: FlowTtl) -> bool {
+    injected_by_hop_count(packet, flow).unwrap_or_else(|| is_forged_rst(packet))
+}
+
+/// Whether a fatal TLS alert was injected rather than sent by the server.
+///
+/// A server that cannot agree a handshake sends a seven-byte handshake_failure
+/// or protocol_version alert, which the shape score takes for a forgery.
+pub fn is_forged_tls_alert_on_flow(
+    payload: &[u8],
+    packet: &ParsedPacket<'_>,
+    flow: FlowTtl,
+) -> bool {
+    is_fatal_tls_alert(payload)
+        && injected_by_hop_count(packet, flow)
+            .unwrap_or_else(|| is_forged_tls_alert(payload, packet))
+}
+
+/// Whether an HTTP redirect was injected rather than sent by the server.
+///
+/// The indicator words miss any block page that does not use them, and catch
+/// any real redirect that does.
+pub fn is_forged_redirect_on_flow(
+    payload: &[u8],
+    packet: &ParsedPacket<'_>,
+    flow: FlowTtl,
+) -> bool {
+    http::is_http_redirect(payload)
+        && injected_by_hop_count(packet, flow)
+            .unwrap_or_else(|| is_forged_redirect(payload, packet))
 }
 
 /// Check if a TCP RST packet looks forged by DPI.
@@ -221,6 +260,22 @@ pub fn is_forged_icmp_unreachable(raw_packet: &[u8]) -> bool {
     false
 }
 
+/// Whether a payload is a plaintext fatal TLS alert record — the only kind a
+/// DPI box can forge, and the only kind worth judging.
+fn is_fatal_tls_alert(payload: &[u8]) -> bool {
+    // content_type(1) + version(2) + length(2) + level(1) + description(1)
+    if payload.len() < 7 || payload[0] != 0x15 {
+        return false;
+    }
+    // TLS version 0x0301..=0x0304
+    if payload[1] != 0x03 || payload[2] == 0 || payload[2] > 0x04 {
+        return false;
+    }
+    // Two bytes for a single alert; DPI may pad
+    let record_len = u16::from_be_bytes([payload[3], payload[4]]);
+    (2..=10).contains(&record_len) && payload[5] == 2
+}
+
 /// Check if an incoming TLS packet looks like a forged TLS alert from DPI.
 ///
 /// DPI systems may inject fake TLS alerts (e.g., decode_error, handshake_failure)
@@ -230,35 +285,11 @@ pub fn is_forged_icmp_unreachable(raw_packet: &[u8]) -> bool {
 /// - Alert level = fatal (2)
 /// - Suspicious TTL
 pub fn is_forged_tls_alert(payload: &[u8], packet: &ParsedPacket<'_>) -> bool {
-    // TLS Alert record: content_type(1) + version(2) + length(2) + level(1) + description(1)
-    // Minimum 7 bytes
-    if payload.len() < 7 {
+    if !is_fatal_tls_alert(payload) {
         return false;
     }
-
-    // Check TLS Alert content type (0x15 = 21)
-    if payload[0] != 0x15 {
-        return false;
-    }
-
-    // Check TLS version (0x03, 0x01-0x04)
-    if payload[1] != 0x03 || payload[2] == 0 || payload[2] > 0x04 {
-        return false;
-    }
-
-    // Check record length (should be 2 for a single alert, but DPI may pad)
-    let record_len = ((payload[3] as u16) << 8) | payload[4] as u16;
-    if !(2..=10).contains(&record_len) {
-        return false;
-    }
-
     let alert_level = payload[5];
     let alert_desc = payload[6];
-
-    // Only consider fatal alerts as potentially forged
-    if alert_level != 2 {
-        return false;
-    }
 
     let mut score: u32 = 0;
 

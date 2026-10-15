@@ -298,9 +298,10 @@ impl StrategyEngine {
         if tcp.is_syn_ack() {
             self.flows.syn_ack_received(&flow, packet.ttl());
         }
+        let flow = self.flows.lookup(&flow);
 
         // Check for forged RST packets
-        if tcp.is_rst() && passive::is_forged_rst_on_flow(packet, self.flows.lookup(&flow)) {
+        if tcp.is_rst() && passive::is_forged_rst_on_flow(packet, flow) {
             METRICS.forged_rst_drops.fetch_add(1, Ordering::Relaxed);
             self.record_forged_rst_source(packet.src_addr());
             METRICS.push_event(
@@ -319,7 +320,7 @@ impl StrategyEngine {
 
         // Check for forged HTTP redirects
         if tcp.is_psh_ack() && tcp.has_payload() {
-            if passive::is_forged_redirect(tcp.payload, packet) {
+            if passive::is_forged_redirect_on_flow(tcp.payload, packet, flow) {
                 METRICS
                     .forged_redirect_drops
                     .fetch_add(1, Ordering::Relaxed);
@@ -339,7 +340,7 @@ impl StrategyEngine {
 
             // Check for forged TLS alerts (DPI may inject fake alerts to kill connections)
             if (tcp.src_port == 443 || tcp.src_port == 8080)
-                && passive::is_forged_tls_alert(tcp.payload, packet)
+                && passive::is_forged_tls_alert_on_flow(tcp.payload, packet, flow)
             {
                 METRICS.forged_alert_drops.fetch_add(1, Ordering::Relaxed);
                 METRICS.push_event(

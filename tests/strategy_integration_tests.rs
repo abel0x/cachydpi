@@ -988,6 +988,77 @@ mod evaluate_inbound {
         );
     }
 
+    /// A packet from the server side of the `build_rst_packet` flow.
+    fn from_server(sport: u16, ttl: u8, flags: u8, payload: &[u8]) -> Vec<u8> {
+        build_ipv4_tcp_packet(
+            Ipv4Addr::new(93, 184, 216, 34),
+            Ipv4Addr::new(192, 168, 1, 100),
+            sport,
+            12345,
+            5001,
+            1001,
+            flags,
+            ttl,
+            payload,
+        )
+    }
+
+    fn syn_ack(sport: u16, ttl: u8) -> Vec<u8> {
+        from_server(sport, ttl, tcp::TCP_SYN | tcp::TCP_ACK, &[])
+    }
+
+    fn fatal_alert(description: u8) -> Vec<u8> {
+        vec![0x15, 0x03, 0x03, 0x00, 0x02, 0x02, description]
+    }
+
+    const PSH_ACK: u8 = tcp::TCP_PSH | tcp::TCP_ACK;
+
+    /// A server that cannot agree a handshake says so with a seven-byte fatal
+    /// alert. Dropping it leaves the client waiting instead of failing.
+    #[test]
+    fn servers_own_handshake_failure_alert_is_accepted() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        inbound(&engine, &syn_ack(443, 52));
+        for desc in [40, 70, 80] {
+            let action = inbound(&engine, &from_server(443, 52, PSH_ACK, &fatal_alert(desc)));
+            assert!(
+                matches!(action, PacketAction::Accept),
+                "alert {desc} at the server's hop count: {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn alert_from_closer_than_the_server_is_dropped() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        inbound(&engine, &syn_ack(443, 44));
+        // unrecognized_name: not among the descriptions the shape check knows
+        let action = inbound(&engine, &from_server(443, 58, PSH_ACK, &fatal_alert(112)));
+        assert!(matches!(action, PacketAction::Drop), "{action:?}");
+    }
+
+    /// An injected redirect need not use any word on the indicator list; one
+    /// pointing at a bare address is enough to send the browser to a block page.
+    #[test]
+    fn redirect_from_closer_than_the_server_is_dropped() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        inbound(&engine, &syn_ack(80, 44));
+        let redirect =
+            b"HTTP/1.1 302 Found\r\nLocation: http://195.175.254.2/\r\nContent-Length: 0\r\n\r\n";
+        let action = inbound(&engine, &from_server(80, 58, PSH_ACK, redirect));
+        assert!(matches!(action, PacketAction::Drop), "{action:?}");
+    }
+
+    #[test]
+    fn servers_own_redirect_is_accepted_whatever_it_says() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        inbound(&engine, &syn_ack(80, 52));
+        let redirect =
+            b"HTTP/1.1 302 Found\r\nLocation: http://example.com/restricted-area\r\n\r\n";
+        let action = inbound(&engine, &from_server(80, 52, PSH_ACK, redirect));
+        assert!(matches!(action, PacketAction::Accept), "{action:?}");
+    }
+
     #[test]
     fn passive_disabled_in_non_passive_modes() {
         // HttpFragment (mode 2) doesn't have passive detection
