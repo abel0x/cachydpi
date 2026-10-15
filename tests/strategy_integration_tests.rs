@@ -1134,7 +1134,36 @@ mod evaluate_inbound {
         let mut c = default_config();
         c.strategies.fake_packet_enabled = true;
         c.strategies.auto_ttl = true;
+        // These tests are about the measurement; the cap has its own.
+        c.strategies.fake_ttl_max = u8::MAX;
         c
+    }
+
+    /// The regression: a server 15 hops back (TTL 49 of 64) but 5 hops out
+    /// drew fakes at TTL 13, which reached it and reset the connection.
+    /// Measured values stop at the cap.
+    #[test]
+    fn auto_ttl_is_capped_at_fake_ttl_max() {
+        let mut config = with_fakes();
+        config.strategies.fake_ttl_max = 4;
+        let engine = StrategyEngine::new(BypassMode::AllActive, config);
+        assert!(fake_ttls(&engine, 41040, Some(49)).iter().all(|&t| t == 4));
+        // Under the cap, the measurement stands.
+        assert!(fake_ttls(&engine, 41041, Some(61)).iter().all(|&t| t == 3));
+        // So does the fallback for a connection with no SYN-ACK on record.
+        assert!(fake_ttls(&engine, 41042, None).iter().all(|&t| t <= 4));
+    }
+
+    /// The cap is on what auto-detection guesses, not on what the operator
+    /// sets.
+    #[test]
+    fn a_fixed_fake_ttl_is_not_capped() {
+        let mut config = with_fakes();
+        config.strategies.auto_ttl = false;
+        config.strategies.fake_packet_ttl = 9;
+        config.strategies.fake_ttl_max = 4;
+        let engine = StrategyEngine::new(BypassMode::AllActive, config);
+        assert!(fake_ttls(&engine, 41050, Some(49)).iter().all(|&t| t == 9));
     }
 
     /// Each connection's fakes are timed from that connection's own SYN-ACK:
@@ -1653,6 +1682,17 @@ mode = "blacklist"
         assert!(config.strategies.disorder);
         assert!(!config.strategies.fake_packet_enabled);
         assert_eq!(config.strategies.tcp_window_size, 0);
+        // A config written before fake_ttl_max existed gets the cap too.
+        assert_eq!(config.strategies.fake_ttl_max, 4);
+    }
+
+    #[test]
+    fn a_zero_fake_ttl_cap_is_rejected() {
+        let mut config = Config::default();
+        config.strategies.fake_ttl_max = 0;
+        assert!(config.validate().is_err());
+        config.strategies.fake_ttl_max = 1;
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -2239,11 +2279,12 @@ mod auto_detect_escalation {
         let level2 = blocked_connection(&engine, 40002);
         assert!(!fakes(&level2).is_empty(), "level 2 adds fakes: {level2:?}");
         assert!(!has_fake_rst(&level2));
-        // Fake TTL from this connection's SYN-ACK: 64 - 44 = 20 hops, minus 2.
+        // Fake TTL from this connection's SYN-ACK: 64 - 44 = 20 hops, minus 2,
+        // is 18 — past the default cap, so the cap.
         for f in fakes(&level2) {
             assert_eq!(
                 ParsedPacket::parse(f, Direction::Outbound).unwrap().ttl(),
-                18
+                cachydpi::config::DEFAULT_FAKE_TTL_MAX
             );
         }
 

@@ -179,6 +179,7 @@ tls_split_position  = 0      # 0 = auto (split at SNI)
 fake_packet_enabled = false  # decoy packets — off by default (can trigger aggressive DPI)
 fake_packet_ttl     = 0      # 0 = auto-detect from SYN-ACK
 auto_ttl            = true
+fake_ttl_max        = 4      # cap on auto-detected fake TTL — raise only if your DPI sits further out
 fake_wrong_checksum = false
 fake_wrong_seq      = false
 quic_desync         = false  # QUIC fragmentation on UDP 443 (IPv4 only)

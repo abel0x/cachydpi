@@ -158,6 +158,7 @@ fn main() -> Result<()> {
         println!("Passive DPI: {}", config.strategies.passive_dpi);
         println!("Fake packets: {}", config.strategies.fake_packet_enabled);
         println!("Auto TTL: {}", config.strategies.auto_ttl);
+        println!("Auto TTL cap: {}", config.strategies.fake_ttl_max);
         println!("Desync-first: {}", config.strategies.desync_first);
         println!("Multi-fragment: {}", config.strategies.multi_fragment);
         println!("Disorder: {}", config.strategies.disorder);

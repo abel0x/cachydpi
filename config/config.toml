@@ -54,6 +54,15 @@ fake_packet_ttl = 0
 # Auto TTL detection (recommended for all ISPs)
 auto_ttl = true
 
+# Highest TTL auto-detection may give a fake packet (default 4).
+# Auto-detection reads the hop count of the server's replies, but the path
+# back is often much longer than the path there; a fake timed from it can
+# reach the server and reset a connection nothing was blocking. Raise this
+# only if your ISP's DPI sits further out and blocked sites stay blocked;
+# lower it if unblocked sites start failing with fakes on. Does not limit a
+# fixed fake_packet_ttl.
+fake_ttl_max = 4
+
 # Send fake packet with wrong TCP checksum
 # WARNING: Many DPI systems verify checksums. Also NIC checksum offload may
 # recalculate the checksum before DPI sees it. Disabled by default.

@@ -583,10 +583,20 @@ impl StrategyEngine {
     /// from that SYN-ACK: exact for this server, and available whether or not
     /// fakes were enabled when the SYN-ACK arrived — which in mode 7 they
     /// usually were not.
+    ///
+    /// A measured value is capped at `fake_ttl_max`: the SYN-ACK shows the
+    /// return path, and where that is longer than the path out, the fake
+    /// outlives the DPI and resets the connection at the server.
     fn fake_ttl_for(&self, packet: &ParsedPacket<'_>, tcp: &packet::tcp::TcpHeader<'_>) -> u8 {
         if !self.config.strategies.auto_ttl {
             return self.config.strategies.fake_packet_ttl;
         }
+        self.measured_fake_ttl(packet, tcp)
+            .min(self.config.strategies.fake_ttl_max)
+    }
+
+    /// The fake TTL the hop count alone suggests, before the cap.
+    fn measured_fake_ttl(&self, packet: &ParsedPacket<'_>, tcp: &packet::tcp::TcpHeader<'_>) -> u8 {
         if let crate::flow_ttl::FlowTtl::Server(ttl) =
             self.flows.lookup(&Self::outbound_flow(packet, tcp))
         {
@@ -608,7 +618,7 @@ impl StrategyEngine {
         if self.auto_ttl.swap(fake_ttl, Ordering::Relaxed) == 0 {
             info!(
                 recv_ttl = received,
-                fake_ttl = fake_ttl,
+                fake_ttl = fake_ttl.min(self.config.strategies.fake_ttl_max),
                 "auto-TTL: first SYN-ACK seen; fakes take their TTL from each \
                  connection's own SYN-ACK"
             );

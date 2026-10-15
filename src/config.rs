@@ -70,6 +70,13 @@ pub struct StrategyConfig {
     pub fake_packet_ttl: u8,
     /// Enable auto TTL detection
     pub auto_ttl: bool,
+    /// Highest TTL auto-detection may give a fake packet. The measurement
+    /// reads the server's return path, which can be several times longer than
+    /// the path there; a fake timed from it can outlive the DPI, reach the
+    /// server and reset a connection nothing was blocking. Too low a cap only
+    /// stops the fakes short of the DPI, so the error is on the safe side.
+    /// Does not limit a fixed `fake_packet_ttl`.
+    pub fake_ttl_max: u8,
     /// Send fake packets with wrong TCP checksum
     pub fake_wrong_checksum: bool,
     /// Send fake packets with wrong TCP sequence number
@@ -188,6 +195,12 @@ impl Default for GeneralConfig {
     }
 }
 
+/// Measured on a network whose DPI sat 2-3 hops out and whose nearest
+/// servers were 5 hops away while their packets came back over 15: fakes at
+/// TTL 3-4 passed the DPI and broke nothing; auto-TTL uncapped broke 28 of 72
+/// requests to unblocked sites.
+pub const DEFAULT_FAKE_TTL_MAX: u8 = 4;
+
 impl Default for StrategyConfig {
     fn default() -> Self {
         StrategyConfig {
@@ -198,6 +211,7 @@ impl Default for StrategyConfig {
             fake_packet_enabled: false,
             fake_packet_ttl: 0,
             auto_ttl: true,
+            fake_ttl_max: DEFAULT_FAKE_TTL_MAX,
             fake_wrong_checksum: false,
             fake_wrong_seq: false,
             quic_desync: false,
@@ -358,6 +372,11 @@ impl Config {
             anyhow::bail!(
                 "general.queue_num must be <= 65534 (got {}) — the inbound NFQUEUE uses queue_num + 1",
                 self.general.queue_num
+            );
+        }
+        if self.strategies.fake_ttl_max == 0 {
+            anyhow::bail!(
+                "strategies.fake_ttl_max must be at least 1 — a fake with TTL 0 is never sent past this host"
             );
         }
         Ok(())
