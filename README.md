@@ -205,7 +205,7 @@ Domain matching is by **exact domain or a true subdomain** (label-boundary), nev
 
 - **`none`** — apply the bypass to every domain.
 - **`blacklist`** — apply the bypass **only** to listed domains. This is the shipped default, paired with `blacklist.txt`.
-- **`exempt`** — apply the bypass to **everything except** the listed domains. Must not be empty: an empty exemption list would bypass every site, which is what `none` is for. (Called `whitelist` before v1.1.0; the old spelling still loads but warns.)
+- **`exempt`** — apply the bypass to **everything except** the listed domains. Must not be empty: an empty exemption list would bypass every site, which is what `none` is for. (Called `whitelist` before v1.1.0; that spelling is refused since v1.2.0.)
 
 Domain-list file paths are restricted to `/etc/cachydpi/` and `/usr/share/cachydpi/` and are canonicalized to reject symlink/`..` escapes (see [SECURITY.md](SECURITY.md)).
 
@@ -223,7 +223,7 @@ Domain-list file paths are restricted to `/etc/cachydpi/` and `/usr/share/cachyd
 | `--wrong-chksum` | Fake packets with wrong TCP checksum |
 | `--wrong-seq` | Fake packets with wrong TCP sequence |
 | `--http-split <N>` / `--tls-split <N>` | Split positions (0 = auto) |
-| `--blacklist <file>` / `--exempt <file>` | Domain-list file (also sets the corresponding mode). `--whitelist` is a deprecated alias for `--exempt` |
+| `--blacklist <file>` / `--exempt <file>` | Domain-list file (also sets the corresponding mode) |
 | `--no-desync` / `--no-disorder` / `--no-multi-frag` | Disable the named desync technique |
 | `-v` | Verbose: `-v` debug, `-vv`/`-vvv` trace |
 | `--log-file <file>` | Log to a file instead of journald |

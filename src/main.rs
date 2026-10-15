@@ -76,10 +76,6 @@ fn main() -> Result<()> {
         "CachyDPI starting"
     );
 
-    // Anything the config loader wanted to say had to wait for this point:
-    // loading it is what tells us how to log.
-    config.log_deferred_notices(&cli.config);
-
     // Both privacy switches are meant to be on only while debugging, and the
     // failure mode is forgetting one. Nothing else in the log would say so.
     cachydpi::logging::warn_about_sensitive_logging(&config.logging);

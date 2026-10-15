@@ -33,13 +33,24 @@ post_upgrade() {
         echo ">>>     A config without it will not start."
         echo ">>>   * \"whitelist\" is renamed to \"exempt\" (it exempts domains from"
         echo ">>>     the bypass; it never meant \"only these\"). The old spelling"
-        echo ">>>     still works for this release and warns."
+        echo ">>>     is refused since 1.2.0."
         echo ">>>   * mode = \"exempt\" with an empty list is now refused: it would"
         echo ">>>     bypass every site, which is what mode = \"none\" is for."
         echo ">>>"
         echo ">>> Verify before restarting:  sudo cachydpi --dry-run"
         echo ">>> Reference config:          /usr/share/doc/cachydpi/config.toml"
         echo ">>> Details:                   /usr/share/doc/cachydpi/CHANGELOG.md"
+    elif (( $(vercmp "$2" 1.2.0) < 0 )); then
+        # 1.1.x accepted the "whitelist" spelling with a warning; 1.2.0 refuses it.
+        echo ""
+        echo ">>> BREAKING CHANGE in 1.2.0 — check /etc/cachydpi/config.toml"
+        echo ">>>"
+        echo ">>>   * The \"whitelist\" spelling, deprecated in 1.1.0, is no longer"
+        echo ">>>     accepted. Rename mode = \"whitelist\" to mode = \"exempt\","
+        echo ">>>     whitelist_file to exempt_file, and whitelist to exempt."
+        echo ">>>     A config still using it will not start."
+        echo ">>>"
+        echo ">>> Verify before restarting:  sudo cachydpi --dry-run"
     fi
     echo ""
 }

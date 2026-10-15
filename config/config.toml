@@ -94,8 +94,8 @@ disorder = true
 #   "none"      — bypass every site
 #   "blacklist" — bypass ONLY the listed domains (default)
 #   "exempt"    — bypass everything EXCEPT the listed domains
-#                 (was called "whitelist", which said the opposite of what it does;
-#                  the old spelling still works but is deprecated)
+#                 (called "whitelist" before 1.1.0, which said the opposite of
+#                  what it does; that spelling is refused since 1.2.0)
 mode = "blacklist"
 
 # Blacklist file (one domain per line)

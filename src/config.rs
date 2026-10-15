@@ -38,15 +38,6 @@ pub struct Config {
     /// Compiled domain set for O(1) lookup (not serialized)
     #[serde(skip)]
     pub domain_set: HashSet<String>,
-    /// Set when the file still used the pre-rename `whitelist` spelling.
-    ///
-    /// Recorded rather than reported here: loading the config necessarily
-    /// happens before logging exists — the log level comes out of this very
-    /// file — so the notice is emitted by the caller once tracing is up, and
-    /// reaches the journal with a level, a target and a timestamp like every
-    /// other message.
-    #[serde(skip)]
-    pub uses_deprecated_domain_spelling: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,12 +105,11 @@ pub enum DomainMode {
     /// Exemption list: the listed domains are left alone and everything else
     /// gets the bypass.
     ///
-    /// Spelled `whitelist` until now, which described the opposite of what it
-    /// does — a whitelist reads as "only these", so an operator writing
+    /// Spelled `whitelist` before 1.1.0, which described the opposite of what
+    /// it does — a whitelist reads as "only these", so an operator writing
     /// `mode = "whitelist"` with a short list would expect a narrow bypass and
-    /// get the widest one. The old spelling is still accepted, with a warning,
-    /// and is removed in 1.2.0.
-    #[serde(rename = "exempt", alias = "whitelist")]
+    /// get the widest one. The old spelling is refused since 1.2.0.
+    #[serde(rename = "exempt")]
     Exempt,
 }
 
@@ -144,14 +134,14 @@ pub struct DomainConfig {
     /// Path to blacklist file
     #[serde(default)]
     pub blacklist_file: Option<String>,
-    /// Path to the exemption list (`whitelist_file` before the rename)
-    #[serde(default, alias = "whitelist_file")]
+    /// Path to the exemption list
+    #[serde(default)]
     pub exempt_file: Option<String>,
     /// Inline blacklist domains
     #[serde(default)]
     pub blacklist: Vec<String>,
-    /// Inline exempt domains (`whitelist` before the rename)
-    #[serde(default, alias = "whitelist")]
+    /// Inline exempt domains
+    #[serde(default)]
     pub exempt: Vec<String>,
 }
 
@@ -243,13 +233,15 @@ impl Default for LogConfig {
     }
 }
 
-/// Release that drops the `whitelist` aliases. Named here so the warning, the
-/// CHANGELOG and the tests all quote one value rather than a vague "a future
-/// release" that nobody ever acts on.
-const DEPRECATED_WHITELIST_REMOVED_IN: &str = "1.2.0";
+/// Release that removed the `whitelist` spelling, quoted in the refusal.
+const WHITELIST_REMOVED_IN: &str = "1.2.0";
 
-/// Whether a config still spells the exemption list the old way.
-fn config_uses_deprecated_whitelist_spelling(content: &str) -> bool {
+/// Whether a config still spells the exemption list the pre-1.1.0 way.
+///
+/// Checked on the raw text before parsing: with the aliases gone, serde would
+/// otherwise report only an unknown variant or field, and say nothing of what
+/// it became.
+fn config_uses_removed_whitelist_spelling(content: &str) -> bool {
     content.lines().any(|line| {
         let line = line.trim();
         if line.starts_with('#') {
@@ -259,33 +251,6 @@ fn config_uses_deprecated_whitelist_spelling(content: &str) -> bool {
             || line.starts_with("whitelist")
             || (line.starts_with("mode") && line.contains("\"whitelist\""))
     })
-}
-
-/// Warn when a config still uses the pre-rename `whitelist` spelling.
-///
-/// The old names are accepted through serde aliases until 1.2.0, but they
-/// describe the opposite of what the mode does, so say it out loud rather than
-/// letting the misleading name live on silently. Detected from the raw text
-/// because serde aliases do not report which spelling was matched.
-impl Config {
-    /// Emit any notices recorded during loading.
-    ///
-    /// Call once logging is initialised. Reporting straight from `load` meant
-    /// writing to stderr, which produced a line with no level, no target and no
-    /// timestamp — invisible to any filter and dropped by anything collecting
-    /// structured logs.
-    pub fn log_deferred_notices(&self, path: &Path) {
-        if self.uses_deprecated_domain_spelling {
-            warn!(
-                config = %path.display(),
-                removed_in = DEPRECATED_WHITELIST_REMOVED_IN,
-                "\"whitelist\" is deprecated and will be removed in {} — rename it to \
-                 \"exempt\" (mode = \"exempt\", exempt_file, exempt). It never meant \
-                 \"bypass only these\"; the listed domains are the ones left alone",
-                DEPRECATED_WHITELIST_REMOVED_IN
-            );
-        }
-    }
 }
 
 impl Config {
@@ -349,7 +314,18 @@ impl Config {
             );
         }
 
-        let mut config: Config = toml::from_str(&content).with_context(|| {
+        if config_uses_removed_whitelist_spelling(&content) {
+            bail!(
+                "config file {} uses \"whitelist\", which was renamed to \"exempt\" in 1.1.0 \
+                 and removed in {} — rename mode = \"whitelist\" to mode = \"exempt\", \
+                 whitelist_file to exempt_file, and whitelist to exempt. The listed domains \
+                 are the ones left alone; it never meant \"bypass only these\"",
+                path.display(),
+                WHITELIST_REMOVED_IN
+            );
+        }
+
+        let config: Config = toml::from_str(&content).with_context(|| {
             format!(
                 "config file {} is not valid — the daemon will not start with settings it \
                  cannot honour; fix the reported field, or move the file aside to fall \
@@ -359,10 +335,6 @@ impl Config {
                 path.display()
             )
         })?;
-
-        // Recorded now, reported by log_deferred_notices() once logging exists.
-        config.uses_deprecated_domain_spelling =
-            config_uses_deprecated_whitelist_spelling(&content);
 
         debug!("loaded config from {}", path.display());
         Ok(config)
@@ -465,7 +437,7 @@ impl Config {
     }
 
     /// Load domain lists from external files (blacklist_file / exempt_file).
-    /// Merges file contents into the inline blacklist/whitelist vectors,
+    /// Merges file contents into the inline blacklist/exempt vectors,
     /// then builds a HashSet for O(1) lookup.
     pub fn load_domain_lists(&mut self) -> Result<()> {
         if let Some(ref path) = self.domains.blacklist_file {
@@ -500,14 +472,14 @@ impl Config {
         if let Some(ref path) = self.domains.exempt_file {
             if !Self::is_safe_domain_path(path) {
                 warn!(
-                    "whitelist path rejected (must be under /etc/cachydpi/ or /usr/share/cachydpi/): {}",
+                    "exempt list path rejected (must be under /etc/cachydpi/ or /usr/share/cachydpi/): {}",
                     path
                 );
             } else {
                 let p = Path::new(path);
                 if p.exists() {
                     let content = fs::read_to_string(p)
-                        .with_context(|| format!("failed to read whitelist file: {}", path))?;
+                        .with_context(|| format!("failed to read exempt list file: {}", path))?;
                     let count_before = self.domains.exempt.len();
                     for line in content.lines() {
                         let trimmed = line.trim();
@@ -518,10 +490,10 @@ impl Config {
                     info!(
                         file = path.as_str(),
                         domains = self.domains.exempt.len() - count_before,
-                        "loaded whitelist file"
+                        "loaded exempt list file"
                     );
                 } else {
-                    debug!("whitelist file not found: {}", path);
+                    debug!("exempt list file not found: {}", path);
                 }
             }
         }
@@ -923,48 +895,37 @@ mod load_tests {
         assert!(config.should_process_domain("other.com"));
     }
 
-    /// A deprecation without a stated end date is how the dead `install=`
-    /// directive survived in this project. The warning must name the release
-    /// that removes the alias, so it cannot quietly become permanent.
+    /// The pre-1.1.0 spelling is refused with a message that says what it
+    /// became, rather than serde's bare "unknown variant".
     #[test]
-    fn the_deprecation_warning_names_its_removal_release() {
+    fn the_removed_whitelist_spelling_is_refused_with_its_new_name() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        let old_spelling = "[domains]\nmode = \"whitelist\"\nwhitelist = [\"safe.com\"]\n";
-        fs::write(&path, old_spelling).unwrap();
-
-        // The detector fires on this content…
-        assert!(
-            config_uses_deprecated_whitelist_spelling(old_spelling),
-            "the old spelling must still be detected"
-        );
-        // …and the message that goes with it names the removal release, which
-        // is checked against the crate version so the two cannot drift apart.
-        assert!(
-            DEPRECATED_WHITELIST_REMOVED_IN > crate::VERSION,
-            "the removal release ({DEPRECATED_WHITELIST_REMOVED_IN}) must be ahead of \
-             the current version ({}) — drop the alias once it is reached",
-            crate::VERSION
-        );
+        for old in [
+            "[domains]\nmode = \"whitelist\"\nwhitelist = [\"safe.com\"]\n",
+            "[domains]\nmode = \"exempt\"\nwhitelist_file = \"/etc/cachydpi/x.txt\"\n",
+        ] {
+            let path = dir.path().join("config.toml");
+            fs::write(&path, old).unwrap();
+            let err = format!("{:#}", Config::load(&path).unwrap_err());
+            assert!(
+                err.contains("exempt") && err.contains(WHITELIST_REMOVED_IN),
+                "refusal must name the replacement and the release: {err}"
+            );
+        }
     }
 
-    /// The pre-rename spelling keeps working until 1.2.0, mapping to the
-    /// same mode and the same list.
+    /// A comment that mentions the old name is not a use of it.
     #[test]
-    fn the_deprecated_whitelist_spelling_still_loads() {
+    fn a_comment_mentioning_whitelist_is_not_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(
             &path,
-            "[domains]\nmode = \"whitelist\"\nwhitelist = [\"safe.com\"]\n",
+            "[domains]\n# formerly \"whitelist\"\nmode = \"exempt\"\nexempt = [\"safe.com\"]\n",
         )
         .unwrap();
-
-        let mut config = Config::load(&path).expect("the old spelling must still load");
+        let config = Config::load(&path).expect("comments must not trip the check");
         assert_eq!(config.domains.mode, DomainMode::Exempt);
-        config.load_domain_lists().unwrap();
-        assert!(!config.should_process_domain("safe.com"));
-        assert!(config.should_process_domain("other.com"));
     }
 
     /// A mode that consults no list must report "no list", not "a list with

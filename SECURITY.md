@@ -101,7 +101,7 @@ The unit applies the directives below. To see the resulting score on your system
 
 ### Domain-list path restriction (`is_safe_domain_path`, `src/config.rs`)
 
-Blacklist/whitelist file paths supplied via config or CLI are constrained before being read by the daemon:
+Blacklist/exempt list file paths supplied via config or CLI are constrained before being read by the daemon:
 
 1. The **literal** path must start with `/etc/cachydpi` or `/usr/share/cachydpi` (rejects `..` in the path itself).
 2. If the file exists, it is **canonicalized** and the resolved path must still start with an allowed prefix (defeats symlinks pointing outside the allowed directories).

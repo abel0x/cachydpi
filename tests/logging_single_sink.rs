@@ -68,12 +68,11 @@ fn no_second_copy_when_the_stream_is_already_the_journal() {
     );
 }
 
-/// The deprecation notice has to travel through tracing like everything else.
-/// Written straight to the process's output it had no level, no target and no
-/// timestamp: nothing could filter it, and anything collecting structured logs
-/// would drop it entirely.
+/// A config still using the "whitelist" spelling removed in 1.2.0 must stop
+/// the daemon with a message naming what replaced it, not start with a
+/// different domain filter or fail with serde's bare "unknown variant".
 #[test]
-fn the_deprecation_notice_is_a_structured_event() {
+fn the_removed_whitelist_spelling_stops_startup_and_names_its_replacement() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let binary = repo.join("target/debug/cachydpi");
     if !binary.exists() {
@@ -81,7 +80,7 @@ fn the_deprecation_notice_is_a_structured_event() {
         return;
     }
 
-    let config = repo.join("target/logging-test-deprecated.toml");
+    let config = repo.join("target/logging-test-removed-whitelist.toml");
     std::fs::write(
         &config,
         "[general]\nmode = 5\n\n[domains]\nmode = \"whitelist\"\nwhitelist = [\"safe.com\"]\n",
@@ -95,25 +94,12 @@ fn the_deprecation_notice_is_a_structured_event() {
         .env_remove("JOURNAL_STREAM")
         .output()
         .expect("failed to run cachydpi");
-    let output = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
-    let notice = output
-        .lines()
-        .find(|l| l.contains("whitelist"))
-        .unwrap_or_else(|| panic!("no deprecation notice in output:\n{output}"));
-
-    // The markers a bare print cannot produce.
+    assert!(!out.status.success(), "the daemon must not start");
     assert!(
-        notice.contains("WARN"),
-        "notice must carry a level: {notice}"
-    );
-    assert!(
-        notice.contains("cachydpi::config"),
-        "notice must carry its target: {notice}"
-    );
-    assert!(
-        notice.contains("removed in 1.2.0"),
-        "notice must still name the removal release: {notice}"
+        stderr.contains("\"exempt\"") && stderr.contains("removed in 1.2.0"),
+        "the refusal must name the replacement and the release: {stderr}"
     );
 }
 

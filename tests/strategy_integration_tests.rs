@@ -1642,16 +1642,28 @@ foo = "bar"
     }
 
     #[test]
-    fn domain_mode_whitelist() {
+    fn domain_mode_exempt() {
+        let toml = r#"
+[domains]
+mode = "exempt"
+exempt = ["safe.com"]
+"#;
+        let f = write_temp_config(toml);
+        let config = Config::load(f.path()).unwrap();
+        assert_eq!(config.domains.mode, DomainMode::Exempt);
+        assert_eq!(config.domains.exempt, vec!["safe.com"]);
+    }
+
+    /// Removed in 1.2.0, after a release of warnings.
+    #[test]
+    fn domain_mode_whitelist_is_refused() {
         let toml = r#"
 [domains]
 mode = "whitelist"
 whitelist = ["safe.com"]
 "#;
         let f = write_temp_config(toml);
-        let config = Config::load(f.path()).unwrap();
-        assert_eq!(config.domains.mode, DomainMode::Exempt);
-        assert_eq!(config.domains.exempt, vec!["safe.com"]);
+        assert!(Config::load(f.path()).is_err());
     }
 
     #[test]

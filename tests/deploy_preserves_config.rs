@@ -218,7 +218,7 @@ fn post_upgrade_announces_the_breaking_config_change() {
     let run = |from: &str| -> String {
         let script = format!(
             "source ./cachydpi.install; systemd-sysusers() {{ :; }}; \
-             systemd-tmpfiles() {{ :; }}; post_upgrade 1.1.0 {from}"
+             systemd-tmpfiles() {{ :; }}; post_upgrade 1.2.0 {from}"
         );
         let out = Command::new("bash")
             .arg("-c")
@@ -239,7 +239,17 @@ fn post_upgrade_announces_the_breaking_config_change() {
         "the announcement must name what changed, got:\n{from_old}"
     );
 
-    let from_new = run("1.1.0");
+    let from_1_1 = run("1.1.1");
+    assert!(
+        from_1_1.contains("BREAKING CHANGE in 1.2.0") && from_1_1.contains("exempt"),
+        "upgrading from 1.1.x must announce that \"whitelist\" is refused, got:\n{from_1_1}"
+    );
+    assert!(
+        !from_1_1.contains("BREAKING CHANGE in 1.1.0"),
+        "the 1.1.0 notice must not repeat for 1.1.x, got:\n{from_1_1}"
+    );
+
+    let from_new = run("1.2.0");
     assert!(
         !from_new.contains("BREAKING CHANGE"),
         "the announcement must not repeat on later upgrades, got:\n{from_new}"
