@@ -5,17 +5,21 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.1] — 2026-10-15
+
+A corrective release. Mode 6 was breaking the TLS connections it touched, and
+passive defence — on in the default mode — was dropping servers' own resets.
 
 ### Fixed
 
-- Mode 6 no longer breaks TLS connections. It re-framed the ClientHello as two
-  TLS records, which adds five bytes the kernel never sent; since neither the
-  later segments nor the server's ACKs pass through the queue, the sequence
-  numbers could never be brought back in line and the connection stalled. It
-  now sends the ClientHello out of order, byte-for-byte as the kernel wrote it.
-- A server's own RST is no longer dropped as forged. A Linux RST has window 0
-  and no options — every sign the shape check looked for — so refused
+- **Mode 6 no longer breaks TLS connections.** It re-framed the ClientHello as
+  two TLS records, which adds five bytes the kernel never sent; since neither
+  the later segments nor the server's ACKs pass through the queue, the
+  sequence numbers could never be brought back in line and the connection
+  stalled. It now sends the ClientHello out of order, byte-for-byte as the
+  kernel wrote it.
+- **A server's own RST is no longer dropped as forged.** A Linux RST has
+  window 0 and no options — every sign the shape check looked for — so refused
   connections hung until a connect timeout and real resets never arrived. An
   RST is now judged against the TTL of its connection's SYN-ACK: one arriving
   from a nearer hop than the server is injected, one at the server's hop count
@@ -23,8 +27,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   passed. The shape check remains only for connections with no record. The
   per-connection record is a fixed 32 KiB table that holds hashes, not
   addresses.
+- IPv6 fake packets keep the real packet's flow label. The IPv4 total length
+  was written over its low 16 bits, setting every fake apart from the
+  connection it claims to belong to.
+- `quic_desync = false` is honoured. Mode 6 fragmented QUIC regardless, while
+  the startup report listed QUIC desync as off.
+- The systemd crash-loop limit (`StartLimitBurst`, `StartLimitIntervalSec`)
+  is in `[Unit]`, where systemd reads it. Under `[Service]` it was ignored and
+  a failing daemon was restarted indefinitely.
 
-## [1.1.0] — 2026-08-12
+### Changed
+
+- **Mode 6 users who relied on QUIC desync must now set `quic_desync = true`.**
+  It is off by default, as the shipped config always said.
+- Mode 7 no longer desyncs QUIC, so it behaves exactly like mode 5 as
+  documented.
+- Every script, the Makefile, the pacman hooks, the shipped config and the
+  systemd files carry the SPDX licence identifier and copyright line.
+
+## [1.1.0] — 2026-08-14
 
 This release tightens how the domain filter is configured. **It can stop an
 existing installation from starting**, because `/etc/cachydpi/config.toml` is a
@@ -75,6 +96,21 @@ mode = "blacklist"   # or "exempt" (with a non-empty list), or "none"
 Configs merged from a `.pacnew` need the same section; check for one with
 `ls /etc/cachydpi/*.pacnew`.
 
+### Added
+
+- `[logging] log_identifying_fields` (default off). Domains and peer
+  addresses are rendered as `<redacted>` in every log line unless it is on,
+  whatever the log level.
+- Metrics: `forged_rst_sources` (distinct peers that sent a forged RST,
+  estimated with a HyperLogLog so no address is kept), `forged_rst_per_tls_split`,
+  and `sni_parsed` / `sni_syntax_invalid` (whether extracted SNIs are hostname
+  syntax). `domains_loaded` is `null` when no list is in use, so `0` always
+  means an empty list.
+- The daemon logs at startup which techniques the mode and config actually
+  arm, and names the setting responsible for each one that is off.
+- The second TLS split point is chosen at random within the SNI, so the
+  middle fragment's length is no longer a fixed function of the name.
+
 ### Security
 
 - The built-in default domain mode is now `blacklist` (bypasses nothing without
@@ -106,6 +142,18 @@ Configs merged from a `.pacnew` need the same section; check for one with
 - The AUR package hooks (`post_install`, `post_upgrade`, `pre_remove`) are wired
   up through an `.install` file; they were previously defined in the PKGBUILD,
   where pacman never ran them.
+- Packet contents are no longer written to the log. Each "strategy applied"
+  line rendered every fragment as a byte array, putting ClientHellos and their
+  SNI into the journal.
+- Under systemd each message is logged once; it was recorded both as a
+  structured journal entry and as flat text.
+- The `whitelist` deprecation notice goes through the logger, with a level and
+  timestamp, instead of straight to the process output.
+- Capabilities are dropped once at startup; the journal showed the drop twice.
+- The IPv6-disabled check ignores loopback, whose `disable_ipv6` is almost
+  always 0 and outvoted every real interface.
+- A privilege-drop rehearsal killed by a signal is treated as inconclusive
+  rather than as proof that `setuid` cannot work, which aborted startup.
 
 ## [1.0.0] — 2026-04-11
 
