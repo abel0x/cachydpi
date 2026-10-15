@@ -5,6 +5,31 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-10-15
+
+Bypass now reaches the browsers that most need it, and the `whitelist`
+spelling deprecated in 1.1.0 is gone.
+
+### Breaking changes
+
+- **`whitelist` is refused.** `mode = "whitelist"`, `whitelist_file`,
+  `whitelist` and `--whitelist` no longer load. A config still using them stops
+  the daemon with a message naming each replacement: `mode = "exempt"`,
+  `exempt_file`, `exempt`, `--exempt`. Check with `sudo cachydpi --dry-run`
+  before restarting.
+
+### Added
+
+- **A ClientHello spanning several TCP segments is split where its SNI is.**
+  With a post-quantum key share a ClientHello is about 1.7 KB, more than one
+  segment, and browsers that shuffle extension order put the SNI after the key
+  share about half the time. Neither segment was recognised and the connection
+  got no bypass at all. The extension walk now continues into the following
+  segments, finds the name, and splits that segment around it, domain filter
+  included. Fakes are not sent for it, since the start of the ClientHello has
+  already gone out. The state kept between segments is a fixed table of hashed
+  tags and sequence numbers, with no addresses.
+
 ## [1.1.1] — 2026-10-15
 
 A corrective release. Mode 6 was breaking the TLS connections it touched, and
