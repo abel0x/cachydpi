@@ -147,6 +147,15 @@ fn main() -> Result<()> {
     // guessed from counters that stay at zero.
     engine.log_active_techniques();
 
+    // A site the ISP blocks by DNS resolves to the wrong address before any
+    // packet reaches the engine, and no bypass mode can help with that.
+    if !cachydpi::dns::status().encrypted() {
+        warn!(
+            "DNS lookups are not encrypted — sites blocked by DNS will stay blocked \
+             whatever the bypass mode. Run: sudo cachydpi dns enable"
+        );
+    }
+
     // Dry run mode
     if cli.dry_run {
         info!("dry run mode — showing configuration and exiting");
@@ -382,6 +391,7 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
                 }
                 Err(_) => println!("Service: unknown (systemctl not available)"),
             }
+            print_dns_status(&cachydpi::dns::status());
             Ok(())
         }
         Commands::Detect { domain } => {
@@ -438,8 +448,62 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
             Ok(())
         }
         Commands::Settings => settings::run_settings(config, config_path),
+        Commands::Dns { action } => run_dns(action),
         Commands::Helix => {
             print!("{}", cachydpi::helix::render());
+            Ok(())
+        }
+    }
+}
+
+fn print_dns_status(status: &cachydpi::dns::DnsStatus) {
+    use cachydpi::dns::DotMode;
+    let summary = if status.encrypted() {
+        "encrypted (DNS-over-TLS, strict)"
+    } else if !status.via_resolved {
+        "NOT encrypted — /etc/resolv.conf does not use systemd-resolved"
+    } else {
+        match status.dot {
+            DotMode::Off => "NOT encrypted — DNS-over-TLS is off",
+            DotMode::Opportunistic => {
+                "NOT protected — DNS-over-TLS is opportunistic and falls back to plaintext"
+            }
+            DotMode::Strict => unreachable!(),
+        }
+    };
+    println!("DNS: {summary}");
+    if !status.encrypted() {
+        println!("     Sites blocked by DNS stay blocked. Fix: sudo cachydpi dns enable");
+    }
+}
+
+fn run_dns(action: &cachydpi::cli::DnsAction) -> Result<()> {
+    use cachydpi::cli::DnsAction;
+    use cachydpi::dns;
+    let needs_root = || {
+        if !nix::unistd::geteuid().is_root() {
+            anyhow::bail!("this changes systemd-resolved's configuration — run it with sudo");
+        }
+        Ok(())
+    };
+    match action {
+        DnsAction::Status => {
+            print_dns_status(&dns::status());
+            Ok(())
+        }
+        DnsAction::Enable => {
+            needs_root()?;
+            println!("Checking DNS-over-TLS servers on port 853...");
+            dns::enable_with(&dns::System, &dns::bundled_servers())?;
+            println!("DNS-over-TLS enabled ({})", dns::DROPIN_PATH);
+            print_dns_status(&dns::status());
+            Ok(())
+        }
+        DnsAction::Disable => {
+            needs_root()?;
+            dns::disable_with(&dns::System)?;
+            println!("DNS-over-TLS drop-in removed");
+            print_dns_status(&dns::status());
             Ok(())
         }
     }

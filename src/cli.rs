@@ -142,9 +142,25 @@ pub enum Commands {
     Restart,
     /// Interactively configure the domain filter mode (list / all)
     Settings,
+    /// Encrypted DNS: sites blocked by DNS need it, whatever the bypass mode
+    Dns {
+        #[command(subcommand)]
+        action: DnsAction,
+    },
     // Not advertised in help, the README, or mode_description.
     #[command(hide = true)]
     Helix,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DnsAction {
+    /// Show whether DNS lookups are encrypted
+    Status,
+    /// Turn on DNS-over-TLS via systemd-resolved (needs root). Checks the
+    /// servers are reachable first and rolls back if names stop resolving.
+    Enable,
+    /// Remove the DNS-over-TLS drop-in this tool installed (needs root)
+    Disable,
 }
 
 impl Cli {

@@ -260,18 +260,21 @@ CachyDPI manipulates packets on the client only. That bounds what it can do.
 - **Inline DPI with full TCP stream reassembly** — fragmentation is reassembled before inspection.
 - **Server-side RST injection** — if the DPI resets the connection toward the server, the client cannot help.
 - **IP-level blocking** — no packet edit reaches a blocked destination IP.
-- **DNS poisoning** — CachyDPI does not touch DNS; use DNS-over-TLS (below).
+- **DNS poisoning** — packet edits cannot fix a wrong answer; turn on DNS-over-TLS with `sudo cachydpi dns enable` (below).
 
 Field observations against Turkish ISPs (e.g. inline-blocked Cloudflare-fronted domains, IP-blocked sites) are documented in [`tests/reports/FAILURE_ANALYSIS.md`](tests/reports/FAILURE_ANALYSIS.md).
 
 ## DNS security
 
-CachyDPI does not handle DNS. To resist DNS-based censorship, enable DNS-over-TLS via the bundled drop-in (Cloudflare + Google, Quad9 fallback, `DNSOverTLS=yes`):
+A site blocked by DNS resolves to the ISP's block page before any packet reaches CachyDPI, so no bypass mode helps with it. Encrypted DNS does. CachyDPI checks for it at startup and warns when lookups are not encrypted.
 
 ```bash
-sudo cp dns-over-tls.conf /etc/systemd/resolved.conf.d/dns-over-tls.conf
-sudo systemctl restart systemd-resolved
+cachydpi dns status          # encrypted or not, and why
+sudo cachydpi dns enable     # DNS-over-TLS via systemd-resolved
+sudo cachydpi dns disable    # remove what enable installed
 ```
+
+`enable` installs the bundled drop-in (`dns-over-tls.conf`: Cloudflare and Google, Quad9 fallback) as `/etc/systemd/resolved.conf.d/cachydpi-dns-over-tls.conf`. It uses the strict `DNSOverTLS=yes`, because opportunistic mode falls back to plaintext — the poisoned path. Strict mode with port 853 blocked would leave the machine without DNS, so `enable` first checks that the servers answer on 853 and changes nothing if none do, then restarts systemd-resolved and rolls back if names stop resolving. It requires `/etc/resolv.conf` to point at systemd-resolved (`127.0.0.53`), which is the default on CachyOS and Arch with systemd-resolved enabled.
 
 ## Troubleshooting
 

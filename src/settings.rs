@@ -126,7 +126,7 @@ fn print_list_summary(blacklist_file: &str) {
 /// goes to a temp file in the *same directory* (rename is only atomic within one
 /// filesystem), is fsynced, and is then renamed over the destination: a reader
 /// and an interrupted write both see either the old file or the new one.
-fn write_atomically(path: &Path, content: &str) -> Result<()> {
+pub(crate) fn write_atomically(path: &Path, content: &str) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = NamedTempFile::new_in(dir)
         .with_context(|| format!("failed to create temp file in {}", dir.display()))?;

@@ -7,6 +7,7 @@
 pub mod cardinality;
 pub mod cli;
 pub mod config;
+pub mod dns;
 pub mod dpi_detect;
 pub mod flow_ttl;
 pub mod helix;

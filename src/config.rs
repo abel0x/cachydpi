@@ -941,7 +941,11 @@ mod load_tests {
     fn a_non_empty_whitelist_list_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[domains]\nmode = \"blacklist\"\nwhitelist = [\"a.com\"]\n").unwrap();
+        fs::write(
+            &path,
+            "[domains]\nmode = \"blacklist\"\nwhitelist = [\"a.com\"]\n",
+        )
+        .unwrap();
         assert!(Config::load(&path).is_err());
     }
 
