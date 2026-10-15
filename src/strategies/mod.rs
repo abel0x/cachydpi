@@ -14,7 +14,6 @@ pub mod quic;
 pub mod tls_split;
 pub mod window_size;
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -160,6 +159,18 @@ fn initial_ttl_of(received: u8) -> u8 {
     }
 }
 
+/// A fake packet's TTL with nothing measured: guessed from this host's own
+/// outgoing TTL. Only used before any SYN-ACK has been seen.
+fn estimate_fake_ttl_from_own(own: u8) -> u8 {
+    if own > 64 {
+        own - 64 + 1
+    } else if own > 10 {
+        (own / 3).max(1)
+    } else {
+        1
+    }
+}
+
 /// A fake packet's TTL from the TTL the server's packets arrive with: enough
 /// to pass the DPI, which sits a hop or few before the server, and expire
 /// before the server itself.
@@ -168,17 +179,12 @@ fn fake_ttl_from_server_ttl(received: u8) -> u8 {
     if hops > 3 { hops - 2 } else { hops.max(1) }
 }
 
-/// Maximum entries in per-destination TTL cache
-const MAX_TTL_CACHE_ENTRIES: usize = 1024;
-
 /// Main strategy engine that evaluates packets and decides on actions
 pub struct StrategyEngine {
     pub mode: BypassMode,
     pub config: Config,
     /// Fallback auto-detected TTL for fake packets (0 = not yet detected)
     auto_ttl: AtomicU8,
-    /// Per-destination TTL cache: maps destination IP → detected fake TTL
-    ttl_cache: Mutex<HashMap<IpAddr, u8>>,
     /// How many distinct peers sent a forged RST — estimated, not remembered.
     ///
     /// The totals cannot separate "one host resetting a connection repeatedly"
@@ -206,7 +212,6 @@ impl StrategyEngine {
             mode,
             config,
             auto_ttl: AtomicU8::new(0),
-            ttl_cache: Mutex::new(HashMap::new()),
             forged_rst_sources: Mutex::new(crate::cardinality::DistinctCounter::new()),
             flows: crate::flow_ttl::FlowTtlTable::new(),
             hello_resume: crate::hello_resume::HelloResumeTable::new(),
@@ -243,7 +248,7 @@ impl StrategyEngine {
             }
         };
 
-        if tcp.is_syn() && self.passive_enabled() {
+        if tcp.is_syn() && self.tracks_flows() {
             self.flows.syn_sent(&crate::flow_ttl::FlowKey {
                 server: packet.dst_addr(),
                 client: packet.src_addr(),
@@ -309,14 +314,13 @@ impl StrategyEngine {
 
     /// Evaluate an inbound packet for passive DPI detection
     pub fn evaluate_inbound(&self, packet: &ParsedPacket<'_>) -> PacketAction {
-        if !self.passive_enabled() {
-            return PacketAction::Accept;
-        }
-
         let tcp = match packet.tcp() {
             Some(t) => t,
             None => return PacketAction::Accept,
         };
+        if !self.tracks_flows() {
+            return PacketAction::Accept;
+        }
 
         let flow = crate::flow_ttl::FlowKey {
             server: packet.src_addr(),
@@ -326,6 +330,12 @@ impl StrategyEngine {
         };
         if tcp.is_syn_ack() {
             self.flows.syn_ack_received(&flow, packet.ttl());
+            if self.config.strategies.auto_ttl && self.fake_ttl_is_used() {
+                self.note_server_ttl(packet.ttl());
+            }
+        }
+        if !self.passive_enabled() {
+            return PacketAction::Accept;
         }
         let flow = self.flows.lookup(&flow);
 
@@ -390,75 +400,6 @@ impl StrategyEngine {
             }
         }
 
-        // Auto-TTL detection from SYN-ACK responses
-        // The SYN-ACK TTL reveals the server's initial TTL (usually 64 or 128).
-        // Subtracting from the common initial value gives us the hop count.
-        // DPI is typically 1-2 hops before the server, so fake TTL = hops - 2.
-        // This works universally across ISPs — no hardcoded values needed.
-        // Only detect when a fake packet will actually use the result. With
-        // fakes disabled this ran on every SYN-ACK and filled a cache keyed by
-        // peer address that nothing ever read.
-        if tcp.is_syn_ack() && self.config.strategies.auto_ttl && self.fake_ttl_is_used() {
-            let recv_ttl = packet.ttl();
-            let initial_ttl = initial_ttl_of(recv_ttl);
-            let hops = initial_ttl.saturating_sub(recv_ttl);
-            let fake_ttl = fake_ttl_from_server_ttl(recv_ttl);
-
-            // Store per-destination TTL
-            let src_ip = packet.src_addr();
-            if let Ok(mut cache) = self.ttl_cache.lock() {
-                // Evict oldest entries if cache is full
-                if cache.len() >= MAX_TTL_CACHE_ENTRIES && !cache.contains_key(&src_ip) {
-                    // Simple eviction: clear half the cache
-                    let keys: Vec<IpAddr> = cache
-                        .keys()
-                        .take(MAX_TTL_CACHE_ENTRIES / 2)
-                        .copied()
-                        .collect();
-                    for k in keys {
-                        cache.remove(&k);
-                    }
-                }
-                cache.insert(src_ip, fake_ttl);
-                METRICS
-                    .ttl_cache_size
-                    .store(cache.len() as u64, Ordering::Relaxed);
-            }
-
-            METRICS.ttl_detections.fetch_add(1, Ordering::Relaxed);
-
-            // Also update global fallback
-            let current = self.auto_ttl.load(Ordering::Relaxed);
-            if current == 0 {
-                self.auto_ttl.store(fake_ttl, Ordering::Relaxed);
-                METRICS.push_event(
-                    EventLevel::Info,
-                    format!(
-                        "auto-TTL {} for {} (hops={})",
-                        fake_ttl,
-                        crate::logging::peer(src_ip),
-                        hops
-                    ),
-                );
-                info!(
-                    recv_ttl = recv_ttl,
-                    initial_ttl = initial_ttl,
-                    hops = hops,
-                    fake_ttl = fake_ttl,
-                    src = %crate::logging::peer(src_ip),
-                    "auto-TTL detected from SYN-ACK"
-                );
-            } else {
-                debug!(
-                    recv_ttl = recv_ttl,
-                    hops = hops,
-                    fake_ttl = fake_ttl,
-                    src = %crate::logging::peer(src_ip),
-                    "per-destination TTL cached"
-                );
-            }
-        }
-
         PacketAction::Accept
     }
 
@@ -501,7 +442,7 @@ impl StrategyEngine {
                     METRICS.http_splits.fetch_add(1, Ordering::Relaxed);
                     // If fake packets are enabled, inject them too
                     if self.fake_enabled() {
-                        let fake_ttl = self.get_fake_ttl(packet.dst_addr(), packet.ttl());
+                        let fake_ttl = self.fake_ttl_for(packet, tcp);
                         let mut fakes = Vec::new();
 
                         // Desync-first for HTTP too: fake RST first
@@ -609,13 +550,41 @@ impl StrategyEngine {
     /// fakes were enabled when the SYN-ACK arrived — which in mode 7 they
     /// usually were not.
     fn fake_ttl_for(&self, packet: &ParsedPacket<'_>, tcp: &packet::tcp::TcpHeader<'_>) -> u8 {
-        if self.config.strategies.auto_ttl
-            && let crate::flow_ttl::FlowTtl::Server(ttl) =
-                self.flows.lookup(&Self::outbound_flow(packet, tcp))
+        if !self.config.strategies.auto_ttl {
+            return self.config.strategies.fake_packet_ttl;
+        }
+        if let crate::flow_ttl::FlowTtl::Server(ttl) =
+            self.flows.lookup(&Self::outbound_flow(packet, tcp))
         {
             return fake_ttl_from_server_ttl(ttl);
         }
-        self.get_fake_ttl(packet.dst_addr(), packet.ttl())
+        // No SYN-ACK on record — the daemon started mid-connection, or the
+        // slot was reused. The last value seen is the best guess left.
+        match self.auto_ttl.load(Ordering::Relaxed) {
+            0 => estimate_fake_ttl_from_own(packet.ttl()),
+            seen => seen,
+        }
+    }
+
+    /// Keep the latest SYN-ACK-derived fake TTL as the fallback for
+    /// connections with no record. A single number: no address is kept.
+    fn note_server_ttl(&self, received: u8) {
+        let fake_ttl = fake_ttl_from_server_ttl(received);
+        METRICS.ttl_detections.fetch_add(1, Ordering::Relaxed);
+        if self.auto_ttl.swap(fake_ttl, Ordering::Relaxed) == 0 {
+            info!(
+                recv_ttl = received,
+                fake_ttl = fake_ttl,
+                "auto-TTL: first SYN-ACK seen; fakes take their TTL from each \
+                 connection's own SYN-ACK"
+            );
+        }
+    }
+
+    /// Whether the per-connection record is kept: passive defence judges by
+    /// it, and fake packets take their TTL from it.
+    fn tracks_flows(&self) -> bool {
+        self.passive_enabled() || self.fake_ttl_is_used()
     }
 
     fn outbound_flow(
@@ -896,7 +865,7 @@ impl StrategyEngine {
             packet.raw,
             &packet.ip,
             tcp,
-            self.get_fake_ttl(packet.dst_addr(), packet.ttl()),
+            self.fake_ttl_for(packet, tcp),
             &self.config,
         );
         if fakes.is_empty() { None } else { Some(fakes) }
@@ -1007,43 +976,6 @@ impl StrategyEngine {
                     | BypassMode::AutoDetect
                     | BypassMode::Custom
             )
-    }
-
-    fn get_fake_ttl(&self, dst_ip: IpAddr, real_ttl: u8) -> u8 {
-        if self.config.strategies.auto_ttl {
-            // First try per-destination cache
-            if let Ok(cache) = self.ttl_cache.lock()
-                && let Some(&ttl) = cache.get(&dst_ip)
-            {
-                return ttl;
-            }
-            // Fall back to global auto-TTL
-            let detected = self.auto_ttl.load(Ordering::Relaxed);
-            if detected > 0 {
-                detected
-            } else {
-                // Fallback: not yet detected from SYN-ACK, estimate from outbound TTL
-                if real_ttl > 64 {
-                    real_ttl - 64 + 1
-                } else if real_ttl > 10 {
-                    (real_ttl / 3).max(1)
-                } else {
-                    1
-                }
-            }
-        } else {
-            self.config.strategies.fake_packet_ttl
-        }
-    }
-
-    /// Test-only accessor: look up the cached fake TTL for a destination IP.
-    /// Returns the cached value or 0 if no entry exists.
-    pub fn get_fake_ttl_for_test(&self, dst_ip: IpAddr) -> u8 {
-        if let Ok(cache) = self.ttl_cache.lock() {
-            cache.get(&dst_ip).copied().unwrap_or(0)
-        } else {
-            0
-        }
     }
 }
 

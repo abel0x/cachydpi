@@ -1087,109 +1087,96 @@ mod evaluate_inbound {
         );
     }
 
-    /// Auto-TTL exists only to pick the TTL of a fake packet. With fake packets
-    /// off — the shipped default — running it on every SYN-ACK computes a value
-    /// nothing reads and fills a cache keyed by peer address for no benefit.
-    #[test]
-    fn auto_ttl_does_not_run_when_no_fake_packet_will_use_it() {
-        let mut config = default_config();
-        config.strategies.auto_ttl = true;
-        config.strategies.fake_packet_enabled = false; // no consumer
-        let engine = StrategyEngine::new(BypassMode::AllActive, config);
-
-        let pkt = build_syn_ack_packet(44);
-        let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
-        let _action = engine.evaluate_inbound(&parsed);
-
-        assert_eq!(
-            engine.get_fake_ttl_for_test(parsed.src_addr()),
-            0,
-            "nothing consumes a detected TTL here, so none should be cached"
-        );
-    }
-
-    /// Mode 4 builds fake packets, so it would benefit from a learned TTL — but
-    /// it never gets one, and that predates the gating above: auto-TTL is
-    /// detected on the inbound path, which returns early unless passive defence
-    /// is enabled, and mode 4 is not one of the modes that enables it. Its fake
-    /// packets therefore always fall back to estimating the TTL from the
-    /// outbound packet instead of measuring it from a SYN-ACK.
-    ///
-    /// Pinned as the current behaviour rather than asserted as desirable; the
-    /// fix is to decide whether mode 4 should run passive defence at all.
-    #[test]
-    fn fake_packet_mode_never_learns_a_ttl_because_the_inbound_path_is_gated() {
-        let mut config = default_config();
-        config.strategies.auto_ttl = true;
-        config.strategies.fake_packet_enabled = true;
-        let engine = StrategyEngine::new(BypassMode::FakePacket, config);
-
-        let pkt = build_syn_ack_packet(44);
-        let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
-        let _action = engine.evaluate_inbound(&parsed);
-
-        assert_eq!(
-            engine.get_fake_ttl_for_test(parsed.src_addr()),
-            0,
-            "mode 4 does not run the inbound path, so nothing is ever cached"
-        );
-
-        // The same config in a mode that does run passive defence learns it.
-        let mut config = default_config();
-        config.strategies.auto_ttl = true;
-        config.strategies.fake_packet_enabled = true;
-        let engine = StrategyEngine::new(BypassMode::AllActive, config);
-        let _action = engine.evaluate_inbound(&parsed);
-        assert!(engine.get_fake_ttl_for_test(parsed.src_addr()) > 0);
-    }
-
-    #[test]
-    fn auto_ttl_detection_from_syn_ack() {
-        let mut config = default_config(); // auto_ttl=true by default
-        // Detection only runs when a fake packet will use the result — the TTL
-        // exists for nothing else — so arm the consumer.
-        config.strategies.fake_packet_enabled = true;
-        let engine = StrategyEngine::new(BypassMode::AllActive, config);
-
-        // Server at 20 hops: initial_ttl=64, recv_ttl=44, hops=20, fake_ttl=18
-        let pkt = build_syn_ack_packet(44);
-        let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
-        let _action = engine.evaluate_inbound(&parsed);
-
-        // Now check that fake TTL was cached for this destination
-        let dst = parsed.src_addr(); // server is the source in inbound
-        let fake_ttl = engine.get_fake_ttl_for_test(dst);
-        assert!(fake_ttl > 0, "Auto-TTL should be detected from SYN-ACK");
-        assert!(
-            fake_ttl < 44,
-            "Fake TTL ({fake_ttl}) should be less than received TTL (44)"
-        );
-    }
-
-    #[test]
-    fn auto_ttl_cache_eviction() {
-        let mut config = default_config();
-        config.strategies.fake_packet_enabled = true; // consumer of the cache
-        let engine = StrategyEngine::new(BypassMode::AllActive, config);
-
-        // Fill TTL cache beyond MAX_TTL_CACHE_ENTRIES (1024)
-        for i in 0..1030u32 {
-            let ip = Ipv4Addr::new((i >> 16) as u8, (i >> 8) as u8, i as u8, 1);
-            let pkt = build_ipv4_tcp_packet(
-                ip,
-                Ipv4Addr::new(192, 168, 1, 100),
+    /// The TTL on the fakes a ClientHello on `port` draws, after the server
+    /// answered that connection's SYN with a SYN-ACK at `syn_ack_ttl`.
+    fn fake_ttls(engine: &StrategyEngine, port: u16, syn_ack_ttl: Option<u8>) -> Vec<u8> {
+        let server = Ipv4Addr::new(93, 184, 216, 34);
+        let client = Ipv4Addr::new(192, 168, 1, 100);
+        if let Some(ttl) = syn_ack_ttl {
+            let sa = build_ipv4_tcp_packet(
+                server,
+                client,
                 443,
-                12345,
+                port,
                 5000,
                 1001,
                 tcp::TCP_SYN | tcp::TCP_ACK,
-                44,
+                ttl,
                 &[],
             );
-            let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
-            engine.evaluate_inbound(&parsed);
+            engine.evaluate_inbound(&ParsedPacket::parse(&sa, Direction::Inbound).unwrap());
         }
-        // Should not panic or leak — cache size should be bounded
+        let hello = build_ipv4_tcp_packet(
+            client,
+            server,
+            port,
+            443,
+            1000,
+            500,
+            tcp::TCP_PSH | tcp::TCP_ACK,
+            64,
+            &build_tls_client_hello("example.com"),
+        );
+        let fakes = match engine
+            .evaluate_outbound(&ParsedPacket::parse(&hello, Direction::Outbound).unwrap())
+        {
+            PacketAction::InjectAndFragment { fakes, .. } => fakes,
+            PacketAction::InjectThenAccept(fakes) => fakes,
+            other => panic!("expected fakes, got {other:?}"),
+        };
+        fakes
+            .iter()
+            .map(|f| ParsedPacket::parse(f, Direction::Outbound).unwrap().ttl())
+            .collect()
+    }
+
+    fn with_fakes() -> Config {
+        let mut c = default_config();
+        c.strategies.fake_packet_enabled = true;
+        c.strategies.auto_ttl = true;
+        c
+    }
+
+    /// Each connection's fakes are timed from that connection's own SYN-ACK:
+    /// a server 20 hops away (TTL 44 of 64) gets 18, one 8 hops away (TTL 120
+    /// of 128) gets 6. A single per-address value could not be right for both
+    /// a near and a far server behind one name, and kept addresses besides.
+    #[test]
+    fn fakes_take_their_ttl_from_their_own_connection() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, with_fakes());
+        assert!(fake_ttls(&engine, 41000, Some(44)).iter().all(|&t| t == 18));
+        assert!(fake_ttls(&engine, 41001, Some(120)).iter().all(|&t| t == 6));
+    }
+
+    /// Mode 4 builds fakes but runs no passive defence, and the SYN-ACK used
+    /// to be read only on the passive path: its fakes never got a measured
+    /// TTL. The record is now kept whenever fakes will use it.
+    #[test]
+    fn fake_packet_mode_measures_its_ttl() {
+        let engine = StrategyEngine::new(BypassMode::FakePacket, with_fakes());
+        assert!(fake_ttls(&engine, 41010, Some(44)).iter().all(|&t| t == 18));
+    }
+
+    /// With no SYN-ACK on record for a connection, the last measured value
+    /// stands in; before any, an estimate from this host's own TTL.
+    #[test]
+    fn a_connection_with_no_record_falls_back() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, with_fakes());
+        assert!(
+            fake_ttls(&engine, 41020, None).iter().all(|&t| t == 21),
+            "64 / 3"
+        );
+        fake_ttls(&engine, 41021, Some(44));
+        assert!(fake_ttls(&engine, 41022, None).iter().all(|&t| t == 18));
+    }
+
+    #[test]
+    fn a_fixed_fake_ttl_overrides_measurement() {
+        let mut config = with_fakes();
+        config.strategies.auto_ttl = false;
+        config.strategies.fake_packet_ttl = 5;
+        let engine = StrategyEngine::new(BypassMode::AllActive, config);
+        assert!(fake_ttls(&engine, 41030, Some(44)).iter().all(|&t| t == 5));
     }
 
     #[test]
@@ -1908,27 +1895,6 @@ mod edge_cases {
             matches!(action, PacketAction::Fragment(_)),
             "Long SNI should still fragment: {action:?}"
         );
-    }
-
-    #[test]
-    fn multiple_engines_independent_ttl_cache() {
-        let mut config = default_config();
-        config.strategies.fake_packet_enabled = true; // consumer of the cache
-        let engine1 = StrategyEngine::new(BypassMode::AllActive, config.clone());
-        let engine2 = StrategyEngine::new(BypassMode::AllActive, config);
-
-        let pkt = build_syn_ack_packet(44);
-        let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
-        engine1.evaluate_inbound(&parsed);
-
-        // engine2 should not see engine1's TTL cache
-        let dst = parsed.src_addr();
-        let _ttl2 = engine2.get_fake_ttl_for_test(dst);
-        // Engine2 hasn't seen any SYN-ACK, so auto_ttl should be 0 and fallback should be used
-        // The fallback for auto_ttl with real_ttl=0 (no packet context) depends on implementation
-        // Just verify engine2 didn't inherit engine1's cache
-        let ttl1 = engine1.get_fake_ttl_for_test(dst);
-        assert!(ttl1 > 0, "Engine1 should have cached TTL");
     }
 }
 

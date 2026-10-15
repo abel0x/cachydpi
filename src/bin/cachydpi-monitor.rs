@@ -452,11 +452,6 @@ fn render_strategies(frame: &mut Frame, area: Rect, app: &App) {
                 ),
                 Style::default().fg(Color::White),
             ),
-            Span::raw("  Cache: "),
-            Span::styled(
-                format!("{}", s.map_or(0, |s| s.strategies.ttl_cache_entries)),
-                Style::default().fg(Color::DarkGray),
-            ),
         ]),
     ];
 

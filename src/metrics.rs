@@ -100,7 +100,6 @@ pub struct Metrics {
     pub ttl_detections: AtomicU64,
     /// Mode 7: times a destination was moved to another strategy level.
     pub escalations: AtomicU64,
-    pub ttl_cache_size: AtomicU64,
 
     // ── Error counters ──
     pub parse_failures: AtomicU64,
@@ -161,7 +160,6 @@ impl Metrics {
             sni_syntax_invalid: AtomicU64::new(0),
             ttl_detections: AtomicU64::new(0),
             escalations: AtomicU64::new(0),
-            ttl_cache_size: AtomicU64::new(0),
 
             parse_failures: AtomicU64::new(0),
             queue_errors: AtomicU64::new(0),
@@ -277,7 +275,6 @@ impl Metrics {
                 sni_syntax_invalid: self.sni_syntax_invalid.load(Relaxed),
                 ttl_detections: self.ttl_detections.load(Relaxed),
                 escalations: self.escalations.load(Relaxed),
-                ttl_cache_entries: self.ttl_cache_size.load(Relaxed),
             },
             errors: ErrorSnapshot {
                 parse_failures: self.parse_failures.load(Relaxed),
@@ -374,7 +371,6 @@ pub struct StrategySnapshot {
     pub ttl_detections: u64,
     #[serde(default)]
     pub escalations: u64,
-    pub ttl_cache_entries: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
