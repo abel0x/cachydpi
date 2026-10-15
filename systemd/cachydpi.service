@@ -5,6 +5,10 @@ Description=CachyDPI — System-wide DPI bypass daemon
 Documentation=https://github.com/abel0x/cachydpi
 After=network-online.target nftables.service
 Wants=network-online.target
+# Give up after 5 failed starts in 60 s. These are [Unit] keys; under
+# [Service] systemd ignores the interval and the limit never applied.
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -51,8 +55,6 @@ ExecSearchPath=/usr/bin:/usr/sbin
 # Restart policy
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 # Logging
 StandardOutput=journal
