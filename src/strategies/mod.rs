@@ -111,7 +111,8 @@ pub enum BypassMode {
     FakePacket,
     /// Mode 5: All active techniques combined
     AllActive,
-    /// Mode 6: Aggressive — all techniques + QUIC desync
+    /// Mode 6: Aggressive — all techniques, always out-of-order, QUIC desync
+    /// when `quic_desync` is set
     Aggressive,
     /// Mode 7: Auto-detect — NOT IMPLEMENTED.
     ///
@@ -686,7 +687,9 @@ impl StrategyEngine {
         packet: &ParsedPacket<'_>,
         udp: &packet::udp::UdpHeader<'_>,
     ) -> PacketAction {
-        if !matches!(self.mode, BypassMode::Aggressive | BypassMode::AutoDetect) {
+        // Mode 7 is documented as behaving exactly like mode 5, and mode 5
+        // leaves QUIC alone.
+        if !matches!(self.mode, BypassMode::Aggressive) || !self.config.strategies.quic_desync {
             return PacketAction::Accept;
         }
 
@@ -778,7 +781,7 @@ impl StrategyEngine {
     /// startup instead of leaving it to be inferred from metrics.
     pub fn log_active_techniques(&self) {
         let s = &self.config.strategies;
-        let quic_mode = matches!(self.mode, BypassMode::Aggressive | BypassMode::AutoDetect);
+        let quic_mode = matches!(self.mode, BypassMode::Aggressive);
 
         info!(
             mode = ?self.mode,

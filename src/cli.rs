@@ -21,7 +21,7 @@ pub struct Cli {
     ///   3 = TLS ClientHello SNI fragmentation
     ///   4 = Fake packet injection (wrong TTL)
     ///   5 = All active techniques combined
-    ///   6 = Aggressive (all + QUIC desync)
+    ///   6 = Aggressive (all + out-of-order; QUIC desync if enabled)
     ///   7 = Auto-detect — NOT IMPLEMENTED, currently behaves like mode 5
     ///
     /// When unset, the value from config.toml (or the built-in default) is used.
@@ -157,7 +157,7 @@ impl Cli {
             3 => "TLS ClientHello SNI fragmentation",
             4 => "Fake packet injection",
             5 => "All active techniques",
-            6 => "Aggressive (all + QUIC)",
+            6 => "Aggressive (all + out-of-order, opt-in QUIC)",
             7 => "Auto-detect (not implemented — same as mode 5)",
             _ => "Unknown",
         }

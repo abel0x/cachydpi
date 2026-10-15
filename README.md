@@ -153,7 +153,7 @@ An interactive menu writes the `[domains] mode` line into the config (preserving
 | 3 | TLS ClientHello fragmentation at the SNI | HTTPS with simple SNI inspection |
 | 4 | Fake-packet injection (wrong TTL) | TTL-based evasion |
 | **5** | **All active techniques combined (default)** | **Start here** |
-| 6 | Aggressive: all techniques + QUIC desync + out-of-order delivery | Stubborn DPI (see warning) |
+| 6 | Aggressive: all techniques + out-of-order delivery, and QUIC desync when `quic_desync = true` | Stubborn DPI (see warning) |
 | 7 | Auto-detect — **NOT IMPLEMENTED** | — |
 
 > **Mode 7 is not implemented.** The `dpi_detect` module is not wired into the packet engine; mode 7 performs no runtime probing and behaves **exactly like mode 5**. The daemon logs a warning at startup if it is selected. Choose an explicit mode 1–6 for predictable behaviour.

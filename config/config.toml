@@ -22,7 +22,7 @@ manage_rules = true
 #   3 = TLS ClientHello SNI fragmentation
 #   4 = Fake packet injection (wrong TTL)
 #   5 = All active techniques (recommended)
-#   6 = Aggressive (all + QUIC desync)
+#   6 = Aggressive (all + out-of-order; QUIC desync if quic_desync = true)
 #   7 = Auto-detect
 mode = 5
 
@@ -66,6 +66,7 @@ fake_wrong_seq = false
 # QUIC/UDP desynchronization (UDP port 443)
 # WARNING: Many ISPs reassemble IP fragments before DPI inspection.
 # IPv6 does not support sender-side fragmentation. Disabled by default.
+# Applies in mode 6 only.
 quic_desync = false
 
 # ── Advanced DPI bypass (desync) ──

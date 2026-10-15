@@ -755,7 +755,7 @@ mod evaluate_outbound_misc {
     }
 
     #[test]
-    fn quic_only_in_aggressive_and_autodetect() {
+    fn quic_desync_only_in_aggressive() {
         let pkt = build_quic_initial_packet();
 
         // Mode 5 (AllActive) should NOT desync QUIC
@@ -767,14 +767,37 @@ mod evaluate_outbound_misc {
             "AllActive should accept QUIC: {action:?}"
         );
 
-        // Mode 6 (Aggressive) SHOULD desync QUIC
-        let engine = StrategyEngine::new(BypassMode::Aggressive, default_config());
-        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
-        let action = engine.evaluate_outbound(&parsed);
-        assert!(
-            matches!(action, PacketAction::Fragment(_)),
-            "Aggressive should fragment QUIC: {action:?}"
-        );
+        // Mode 6 desyncs QUIC when it is asked for; mode 7 behaves as mode 5
+        let mut cfg = default_config();
+        cfg.strategies.quic_desync = true;
+        for (mode, desyncs) in [(BypassMode::Aggressive, true), (BypassMode::AutoDetect, false)] {
+            let engine = StrategyEngine::new(mode, cfg.clone());
+            let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+            let action = engine.evaluate_outbound(&parsed);
+            assert_eq!(
+                matches!(action, PacketAction::Fragment(_)),
+                desyncs,
+                "{mode:?} with quic_desync = true: {action:?}"
+            );
+        }
+    }
+
+    /// `quic_desync = false` is the shipped default and what the startup log
+    /// reports as "not active". Mode 6 used to fragment QUIC anyway.
+    #[test]
+    fn quic_desync_off_is_honoured_in_every_mode() {
+        let pkt = build_quic_initial_packet();
+        let mut cfg = default_config();
+        cfg.strategies.quic_desync = false;
+        for mode in [BypassMode::Aggressive, BypassMode::AutoDetect] {
+            let engine = StrategyEngine::new(mode, cfg.clone());
+            let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+            let action = engine.evaluate_outbound(&parsed);
+            assert!(
+                matches!(action, PacketAction::Accept),
+                "{mode:?} with quic_desync = false must leave QUIC alone: {action:?}"
+            );
+        }
     }
 
     #[test]
