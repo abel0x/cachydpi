@@ -39,6 +39,13 @@ const INBOUND_PACKETS: u32 = 16;
 /// An injected HTTP redirect is a short response; a download is full-size
 /// segments, and none of those need to leave the kernel.
 const HTTP_RESPONSE_MAX_LEN: u32 = 1000;
+/// Reply packets in which mode 7 looks for the server's first data. The
+/// server ACKs each segment of a split or reordered ClientHello on its own,
+/// so after the SYN-ACK up to three empty ACKs, plus duplicates for
+/// out-of-order segments, can come before its first flight. At 4 the first
+/// flight often fell outside the window, and the teardown RST of a healthy
+/// connection then read as a reset before any answer.
+const ANSWER_PACKETS: u32 = 8;
 
 impl NftRules {
     pub fn new(queue_num: u16, ipv6: bool) -> Self {
@@ -84,7 +91,7 @@ impl NftRules {
         };
         let answers = if self.adaptive {
             format!(
-                "        tcp sport 443 tcp flags & ack == ack meta length >= 120 ct reply packets <= 4 queue num {} bypass\n",
+                "        tcp sport 443 tcp flags & ack == ack meta length >= 120 ct reply packets <= {ANSWER_PACKETS} queue num {} bypass\n",
                 self.queue_num + 1
             )
         } else {
@@ -358,8 +365,18 @@ mod tests {
             .ruleset_script();
         assert!(
             line_with(&adaptive, "meta length >= 120")
-                .contains("ct reply packets <= 4 queue num 201")
+                .contains("ct reply packets <= 8 queue num 201")
         );
+    }
+
+    /// The regression: against a reordered three-way split, a server sent
+    /// the SYN-ACK, three empty ACKs, and only then its first data, the fifth
+    /// reply packet, which a window of 4 never queued.
+    #[test]
+    fn the_answer_window_reaches_past_the_acks_of_a_split_client_hello() {
+        let syn_ack = 1;
+        let acks_for_three_segments = 3;
+        assert!(ANSWER_PACKETS > syn_ack + acks_for_three_segments);
     }
 
     /// QUIC used to be queued whole whether or not anything would act on it.
