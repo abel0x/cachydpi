@@ -2,6 +2,17 @@
 
 **System-wide DPI bypass for Linux — a native [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI) alternative.**
 
+[![Version](https://img.shields.io/badge/version-1.9.0-blue)](CHANGELOG.md)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-green)](LICENSE)
+[![Rust 2024](https://img.shields.io/badge/rust-2024_edition-orange)](Cargo.toml)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)](#requirements)
+
+- **Whole system, no proxy.** Every application is covered; nothing to configure per browser or per app.
+- **Seven modes**, from passive defence alone to an adaptive mode that adds techniques per destination when it sees the DPI interfere.
+- **Fails open.** If the daemon stops or falls behind, traffic passes through unmodified instead of dropping.
+- **Hardened service.** A dedicated non-root user that keeps only `CAP_NET_ADMIN`; addresses are redacted from its logs and kept in its tables only as hashed tags.
+- **Measured, not guessed.** 1.9.0 was checked mode by mode against 100 sites; the [results](#field-results) are below.
+
 CachyDPI is a Rust daemon that intercepts outgoing TCP/UDP traffic through **nftables + NFQUEUE** and applies packet-manipulation techniques (fragmentation, fake-packet injection, passive-defense drops) to defeat the Deep Packet Inspection (DPI) systems that some ISPs use for censorship. It was developed and tested primarily against **Turkish ISP DPI**, but the techniques apply to any DPI that inspects HTTP `Host` headers or TLS SNI without full stream reassembly.
 
 It runs as a hardened `systemd` service under a dedicated, non-root user, granted only `CAP_NET_ADMIN` and `CAP_NET_RAW` — and it gives up `CAP_NET_RAW` once its sockets are open.
@@ -128,6 +139,7 @@ The TUI connects to the daemon's Unix socket (`/run/cachydpi/metrics.sock`, fall
 | `monitor` | Real-time TUI dashboard (no root) |
 | `status` | Show current status |
 | `detect <domain>` | Probe the target (default `www.youtube.com`) to fingerprint the ISP's DPI; **makes real network connections** |
+| `dns status` / `dns enable` / `dns disable` | Check or turn on encrypted DNS (see [DNS security](#dns-security)) |
 | `restart` | `systemctl restart cachydpi` |
 | `install-rules` / `remove-rules` | Manually add/remove the nftables table |
 
@@ -151,14 +163,43 @@ An interactive menu writes the `[domains] mode` line into the config (preserving
 | 1 | Passive defense: drop forged RST / 302 redirect / TLS-alert packets | ISPs that only inject forged packets |
 | 2 | HTTP request fragmentation (split at the `Host` header) | Plain-HTTP sites |
 | 3 | TLS ClientHello fragmentation at the SNI | HTTPS with simple SNI inspection |
-| 4 | Fake-packet injection (wrong TTL) | TTL-based evasion |
+| 4 | Fake-packet injection (wrong TTL, capped by `fake_ttl_max`) | DPI that reassembles split packets |
 | **5** | **All active techniques combined (default)** | **Start here** |
 | 6 | Aggressive: all techniques + out-of-order delivery, and QUIC desync when `quic_desync = true` | Stubborn DPI (see warning) |
 | 7 | Adaptive: mode 5, adding techniques per site where the DPI is seen interfering | Mixed sites, unknown DPI |
 
-> **Mode 7** starts each site on the mode 5 techniques as configured. Each connection to a site that the DPI is seen interfering with — a forged RST, TLS alert or redirect that passive defence drops, a ClientHello the kernel has to send again because nothing answered it, or a reset that arrives before the server has said anything — moves that site up a level: (1) reordered three-way split, (2) plus fake packets, timed from the connection's own SYN-ACK, (3) plus the desync RST, then back to the configured techniques. Several forged packets on one connection count once. It learns from what it sees and does no active probing; per-site levels are kept as hashed tags, not addresses, and reset when the daemon restarts.
+> **Mode 7** starts each site on the mode 5 techniques as configured. Each connection to a site that the DPI is seen interfering with — a forged RST, TLS alert or redirect that passive defence drops, a ClientHello the kernel has to send again because nothing answered it, or a reset that arrives before the server has said anything — moves that site up a level: (1) reordered three-way split, (2) plus fake packets, timed from the connection's own SYN-ACK, (3) plus the desync RST, then back to the configured techniques. Several forged packets on one connection count once. It learns from what it sees and does no active probing. Levels are kept per destination address, as hashed tags rather than the addresses themselves, and reset when the daemon restarts. A site served from several addresses (a CDN, for example) learns its level on each address separately.
+
+### Fake-packet TTL
+
+A fake packet has to live long enough to reach the DPI and die before it reaches the server; one that arrives is taken as real data, and the server resets the connection. With `auto_ttl = true` the TTL comes from the hop count of each connection's SYN-ACK. That count measures the path *back*, and on some networks it is several times longer than the path there: in testing, servers 5 hops away answered over 15. A TTL timed from the return path then reached the servers and broke sites that were never blocked.
+
+`fake_ttl_max` (default **4**) caps every auto-detected value. If blocked sites stay blocked with fakes on, your DPI may sit further out: raise it one step at a time. If unblocked sites start failing, lower it. A fixed `fake_packet_ttl` is used as given and is not capped.
 
 > **Mode 6 warning.** Mode 6 can send out-of-order segments and (if `desync_first` is enabled) fake RST packets. On ISPs with aggressive DPI this can cause the DPI to treat the fake RST as a real close and drop the whole connection. Prefer mode 5 unless you have a specific reason.
+
+## Field results
+
+Every mode of 1.9.0, tested on 2026-10-15 from a Turkish residential connection against 100 varied sites (social media, Turkish and international news, shopping, games, developer tools, cloud and education). Each site was requested twice over HTTPS with a normal ClientHello, twice with a small one (X25519 only, as clients without post-quantum key exchange send), and twice over plain HTTP: 600 requests per mode. Default config otherwise (`fake_packet_enabled = false`, `multi_fragment` and `disorder` on).
+
+| Mode | Answered | HTTPS | HTTPS, small ClientHello | HTTP |
+|:----:|:--------:|:-----:|:------------------------:|:----:|
+| off | 585 / 600 | 195 | 196 | 194 |
+| 1 | 584 | 195 | 195 | 194 |
+| 2 | 586 | 196 | 196 | 194 |
+| 3 | 582 | 193 | 195 | 194 |
+| **4** | **597** | **199** | **200** | **198** |
+| 5 | 590 | 200 | 196 | 194 |
+| 6 | 586 | 197 | 195 | 194 |
+| 7 | 588 | 199 | 195 | 194 |
+
+Two of the 100 sites were blocked on that network. What the numbers say about it:
+
+- **Its DPI reassembles split packets sent in order**, so modes 2 and 3 alone change nothing. Modes 5–7 mostly open the blocked sites for browsers by sending the split ClientHello out of order, but not for small ClientHellos or plain HTTP.
+- **Fake packets open them for every client**, including small ClientHellos and plain HTTP; mode 4 does this without breaking any other site in the list. Before 1.9.0, its auto-detected TTL reset about 1 in 9 requests to unblocked sites, and nearly every request to those behind Akamai and Google edges (see [Fake-packet TTL](#fake-packet-ttl)).
+- The remaining failures are timeouts on two sites that also time out with the daemon off, or under parallel load.
+
+One network on one day is not a guarantee. If the default does not work for you, try the modes in the order 5, 7, 4.
 
 ## Configuration
 
@@ -234,18 +275,18 @@ Domain-list file paths are restricted to `/etc/cachydpi/` and `/usr/share/cachyd
 
 ## Release verification (SSH-signed)
 
-CachyDPI's git commits and release tags are signed with the maintainer's **SSH** signing key (`id_ed25519_github`), not GPG. To verify, add the maintainer's public key to an allowed-signers file and check the signature:
+CachyDPI's git commits and release tags are signed with the maintainer's **SSH** signing key, not GPG. To verify, add the maintainer's public key to an allowed-signers file and check the signature:
 
 ```bash
 # 1. Save the maintainer's published SSH signing public key, mapped to their commit email:
-echo '87727485+abel0x@users.noreply.github.com namespaces="git" ssh-ed25519 AAAA...PUBLICKEY...' \
+echo '86494759+abel0x@users.noreply.github.com namespaces="git" ssh-ed25519 AAAA...PUBLICKEY...' \
   >> ~/.config/git/allowed_signers
 
 # 2. Point git at it:
 git config gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
 
 # 3. Verify:
-git verify-tag v1.0.0          # a release tag
+git verify-tag v1.9.0          # a release tag
 git log --show-signature -1    # the tip commit
 ```
 
@@ -258,7 +299,7 @@ CachyDPI manipulates packets on the client only. That bounds what it can do.
 **Effective against:** passive DPI that injects forged RST / HTTP-redirect / TLS-alert packets; SNI/Host-based blocking where the DPI inspects but does not reassemble the TCP stream; first-packet SNI inspection.
 
 **Not effective against:**
-- **Inline DPI with full TCP stream reassembly** — fragmentation is reassembled before inspection.
+- **Inline DPI with full TCP stream reassembly** — fragmentation is reassembled before inspection. Some DPI reassembles only segments that arrive in order; against those, `disorder` (on by default) and fake packets can still get through.
 - **Server-side RST injection** — if the DPI resets the connection toward the server, the client cannot help.
 - **IP-level blocking** — no packet edit reaches a blocked destination IP.
 - **DNS poisoning** — packet edits cannot fix a wrong answer; turn on DNS-over-TLS with `sudo cachydpi dns enable` (below).
@@ -341,6 +382,10 @@ ls -l /run/cachydpi/metrics.sock
 grep <domain> /etc/cachydpi/blacklist.txt
 sudo cachydpi detect <domain>
 ```
+
+## Changelog
+
+What changed in each release, and why: **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Building and testing
 
