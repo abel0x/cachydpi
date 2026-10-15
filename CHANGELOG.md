@@ -5,6 +5,25 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-10-15
+
+### Added
+
+- **Mode 7 also escalates on blocks that leave no forged packet:** a
+  ClientHello the kernel has to send again because nothing answered it, and
+  a reset that arrives before the server has sent anything, even when it
+  copies the server's TTL. In mode 7 the server's first reply packets are
+  queued so that an answer can be seen.
+
+### Fixed
+
+- **`cachydpi monitor` no longer shows DISCONNECTED for a running daemon it
+  merely cannot read.** A monitor from an older release cannot parse newer
+  metrics; it now shows VERSION MISMATCH with both versions.
+- `make install` and `deploy.sh` install `cachydpi-monitor` along with the
+  daemon, and `make uninstall` removes it. Before, the monitor was never
+  updated, which is how an old one ended up reading a newer daemon.
+
 ## [1.7.0] — 2026-10-15
 
 ### Changed
