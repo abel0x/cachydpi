@@ -154,9 +154,9 @@ An interactive menu writes the `[domains] mode` line into the config (preserving
 | 4 | Fake-packet injection (wrong TTL) | TTL-based evasion |
 | **5** | **All active techniques combined (default)** | **Start here** |
 | 6 | Aggressive: all techniques + out-of-order delivery, and QUIC desync when `quic_desync = true` | Stubborn DPI (see warning) |
-| 7 | Auto-detect — **NOT IMPLEMENTED** | — |
+| 7 | Adaptive: mode 5, adding techniques per site where the DPI is seen interfering | Mixed sites, unknown DPI |
 
-> **Mode 7 is not implemented.** The `dpi_detect` module is not wired into the packet engine; mode 7 performs no runtime probing and behaves **exactly like mode 5**. The daemon logs a warning at startup if it is selected. Choose an explicit mode 1–6 for predictable behaviour.
+> **Mode 7** starts each site on the mode 5 techniques as configured. Each connection to a site that the DPI is seen interfering with — a forged RST, TLS alert or redirect that passive defence drops — moves that site up a level: (1) reordered three-way split, (2) plus fake packets, timed from the connection's own SYN-ACK, (3) plus the desync RST, then back to the configured techniques. Several forged packets on one connection count once. It learns from what it sees and does no active probing; per-site levels are kept as hashed tags, not addresses, and reset when the daemon restarts.
 
 > **Mode 6 warning.** Mode 6 can send out-of-order segments and (if `desync_first` is enabled) fake RST packets. On ISPs with aggressive DPI this can cause the DPI to treat the fake RST as a real close and drop the whole connection. Prefer mode 5 unless you have a specific reason.
 

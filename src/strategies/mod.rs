@@ -114,14 +114,13 @@ pub enum BypassMode {
     /// Mode 6: Aggressive — all techniques, always out-of-order, QUIC desync
     /// when `quic_desync` is set
     Aggressive,
-    /// Mode 7: Auto-detect — NOT IMPLEMENTED.
+    /// Mode 7: Adaptive — mode 5, escalated per destination.
     ///
-    /// The `dpi_detect` module is not wired into the engine, so this variant
-    /// performs no runtime probing: every match arm treats it exactly like
-    /// `AllActive`. The CLI help, `Cli::mode_description`, and a startup
-    /// `warn!` all say so. Until per-destination detection lands, mode 7 is an
-    /// alias for mode 5 — kept (rather than removed) only because
-    /// `from_mode_number(7)` is part of the public mode mapping.
+    /// Starts every destination on the configured techniques. Each connection
+    /// to it that the DPI is seen interfering with — a forged RST, TLS alert or
+    /// redirect dropped by passive defence — moves it up a level: reordered
+    /// three-way split, then fakes, then the desync RST, then round again. It
+    /// does no active probing; the `dpi_detect` module is separate.
     AutoDetect,
     /// Custom mode from config file
     Custom,
@@ -144,11 +143,29 @@ impl BypassMode {
 
 /// Whether QUIC Initials are desynced: mode 6 with `quic_desync` set.
 ///
-/// Mode 7 is documented as behaving exactly like mode 5, and mode 5 leaves
-/// QUIC alone. The nftables rules use the same answer to decide whether QUIC
+/// Mode 7 escalates TCP techniques only and, like mode 5, leaves QUIC alone. The nftables rules use the same answer to decide whether QUIC
 /// is queued at all.
 pub fn quic_desync_active(mode: BypassMode, config: &Config) -> bool {
     matches!(mode, BypassMode::Aggressive) && config.strategies.quic_desync
+}
+
+/// The initial TTL a server most likely used: 64, 128 or 255.
+fn initial_ttl_of(received: u8) -> u8 {
+    if received <= 64 {
+        64
+    } else if received <= 128 {
+        128
+    } else {
+        255
+    }
+}
+
+/// A fake packet's TTL from the TTL the server's packets arrive with: enough
+/// to pass the DPI, which sits a hop or few before the server, and expire
+/// before the server itself.
+fn fake_ttl_from_server_ttl(received: u8) -> u8 {
+    let hops = initial_ttl_of(received).saturating_sub(received);
+    if hops > 3 { hops - 2 } else { hops.max(1) }
 }
 
 /// Maximum entries in per-destination TTL cache
@@ -179,6 +196,8 @@ pub struct StrategyEngine {
     /// Where a ClientHello spanning segments continues, for the segment that
     /// carries its SNI.
     hello_resume: crate::hello_resume::HelloResumeTable,
+    /// Mode 7's per-destination strategy level.
+    escalation: crate::escalation::EscalationTable,
 }
 
 impl StrategyEngine {
@@ -191,6 +210,7 @@ impl StrategyEngine {
             forged_rst_sources: Mutex::new(crate::cardinality::DistinctCounter::new()),
             flows: crate::flow_ttl::FlowTtlTable::new(),
             hello_resume: crate::hello_resume::HelloResumeTable::new(),
+            escalation: crate::escalation::EscalationTable::new(),
         }
     }
 
@@ -311,6 +331,7 @@ impl StrategyEngine {
 
         // Check for forged RST packets
         if tcp.is_rst() && passive::is_forged_rst_on_flow(packet, flow) {
+            self.note_interference(packet, tcp);
             METRICS.forged_rst_drops.fetch_add(1, Ordering::Relaxed);
             self.record_forged_rst_source(packet.src_addr());
             METRICS.push_event(
@@ -330,6 +351,7 @@ impl StrategyEngine {
         // Check for forged HTTP redirects
         if tcp.is_psh_ack() && tcp.has_payload() {
             if passive::is_forged_redirect_on_flow(tcp.payload, packet, flow) {
+                self.note_interference(packet, tcp);
                 METRICS
                     .forged_redirect_drops
                     .fetch_add(1, Ordering::Relaxed);
@@ -351,6 +373,7 @@ impl StrategyEngine {
             if (tcp.src_port == 443 || tcp.src_port == 8080)
                 && passive::is_forged_tls_alert_on_flow(tcp.payload, packet, flow)
             {
+                self.note_interference(packet, tcp);
                 METRICS.forged_alert_drops.fetch_add(1, Ordering::Relaxed);
                 METRICS.push_event(
                     EventLevel::Warning,
@@ -377,18 +400,9 @@ impl StrategyEngine {
         // peer address that nothing ever read.
         if tcp.is_syn_ack() && self.config.strategies.auto_ttl && self.fake_ttl_is_used() {
             let recv_ttl = packet.ttl();
-            // Determine initial TTL (servers use 64, 128, or 255)
-            let initial_ttl = if recv_ttl <= 64 {
-                64u8
-            } else if recv_ttl <= 128 {
-                128u8
-            } else {
-                255u8
-            };
+            let initial_ttl = initial_ttl_of(recv_ttl);
             let hops = initial_ttl.saturating_sub(recv_ttl);
-            // Fake TTL should reach past the DPI but expire before the server.
-            // DPI is typically 1-3 hops before the server.
-            let fake_ttl = if hops > 3 { hops - 2 } else { hops.max(1) };
+            let fake_ttl = fake_ttl_from_server_ttl(recv_ttl);
 
             // Store per-destination TTL
             let src_ip = packet.src_addr();
@@ -571,6 +585,39 @@ impl StrategyEngine {
         }
     }
 
+    /// In mode 7, move the destination of an inbound forged packet up a level.
+    fn note_interference(&self, packet: &ParsedPacket<'_>, tcp: &packet::tcp::TcpHeader<'_>) {
+        if !matches!(self.mode, BypassMode::AutoDetect) {
+            return;
+        }
+        let server = packet.src_addr();
+        let connection = (packet.dst_addr(), tcp.dst_port, tcp.src_port);
+        if let Some(level) = self.escalation.note_interference(server, &connection) {
+            METRICS.escalations.fetch_add(1, Ordering::Relaxed);
+            info!(
+                dst = %crate::logging::peer(server),
+                level = level,
+                "DPI interference seen; changing techniques for this destination"
+            );
+        }
+    }
+
+    /// TTL for a fake packet on this connection.
+    ///
+    /// With auto-TTL on and the connection's SYN-ACK seen, the hop count comes
+    /// from that SYN-ACK: exact for this server, and available whether or not
+    /// fakes were enabled when the SYN-ACK arrived — which in mode 7 they
+    /// usually were not.
+    fn fake_ttl_for(&self, packet: &ParsedPacket<'_>, tcp: &packet::tcp::TcpHeader<'_>) -> u8 {
+        if self.config.strategies.auto_ttl
+            && let crate::flow_ttl::FlowTtl::Server(ttl) =
+                self.flows.lookup(&Self::outbound_flow(packet, tcp))
+        {
+            return fake_ttl_from_server_ttl(ttl);
+        }
+        self.get_fake_ttl(packet.dst_addr(), packet.ttl())
+    }
+
     fn outbound_flow(
         packet: &ParsedPacket<'_>,
         tcp: &packet::tcp::TcpHeader<'_>,
@@ -689,8 +736,17 @@ impl StrategyEngine {
         //
         // DPI sees: RST(fake) → ClientHello(google.com, fake) → data fragments
         // Server sees: ClientHello fragments (correct order, reassembled)
+        // Mode 7 adds techniques per destination as the DPI is seen to
+        // interfere: 1 reorders and splits in three, 2 adds fakes, 3 adds the
+        // desync RST. 0 is the configuration as written.
+        let level = if matches!(self.mode, BypassMode::AutoDetect) {
+            self.escalation.level(packet.dst_addr())
+        } else {
+            0
+        };
+
         let use_desync = !continuation
-            && self.config.strategies.desync_first
+            && (level >= 3 || self.config.strategies.desync_first)
             && matches!(
                 self.mode,
                 BypassMode::AllActive
@@ -699,7 +755,7 @@ impl StrategyEngine {
                     | BypassMode::Custom
             );
 
-        let use_multi_fragment = self.config.strategies.multi_fragment
+        let use_multi_fragment = (level >= 1 || self.config.strategies.multi_fragment)
             && matches!(
                 self.mode,
                 BypassMode::AllActive
@@ -708,7 +764,7 @@ impl StrategyEngine {
                     | BypassMode::Custom
             );
 
-        let use_disorder = self.config.strategies.disorder
+        let use_disorder = (level >= 1 || self.config.strategies.disorder)
             && matches!(
                 self.mode,
                 BypassMode::AllActive
@@ -748,8 +804,8 @@ impl StrategyEngine {
 
         if let Some(fragments) = fragments {
             METRICS.tls_splits.fetch_add(1, Ordering::Relaxed);
-            if self.fake_enabled() && !continuation {
-                let fake_ttl = self.get_fake_ttl(packet.dst_addr(), packet.ttl());
+            if (self.fake_enabled() || level >= 2) && !continuation {
+                let fake_ttl = self.fake_ttl_for(packet, tcp);
                 let mut fakes = Vec::new();
 
                 // Desync-first: inject fake RST + fake ClientHello with harmless SNI

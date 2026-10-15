@@ -80,17 +80,6 @@ fn main() -> Result<()> {
     // failure mode is forgetting one. Nothing else in the log would say so.
     cachydpi::logging::warn_about_sensitive_logging(&config.logging);
 
-    // Mode 7 (auto-detect) is advertised but not wired to the dpi_detect engine:
-    // it falls through to the same arm as mode 5. Say so out loud instead of
-    // pretending runtime probing happens.
-    if config.general.mode == 7 {
-        warn!(
-            "mode 7 (auto-detect) is NOT IMPLEMENTED — no runtime DPI probing is \
-             performed; it currently behaves exactly like mode 5 (all active \
-             techniques). Select a specific mode (1-6) for predictable behavior."
-        );
-    }
-
     // Initialize performance metrics
     METRICS.init(
         config.general.mode,

@@ -439,7 +439,12 @@ fn render_strategies(frame: &mut Frame, area: Rect, app: &App) {
         ),
         Line::raw(""),
         Line::from(vec![
-            Span::raw(" Auto-TTL: "),
+            Span::raw(" Escalations: "),
+            Span::styled(
+                fmt_num(s.map_or(0, |s| s.strategies.escalations)),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw("  Auto-TTL: "),
             Span::styled(
                 format!(
                     "{} learned",

@@ -22,7 +22,7 @@ pub struct Cli {
     ///   4 = Fake packet injection (wrong TTL)
     ///   5 = All active techniques combined
     ///   6 = Aggressive (all + out-of-order; QUIC desync if enabled)
-    ///   7 = Auto-detect — NOT IMPLEMENTED, currently behaves like mode 5
+    ///   7 = Adaptive: mode 5, adding techniques per site where DPI interferes
     ///
     /// When unset, the value from config.toml (or the built-in default) is used.
     #[arg(short = 'm', long, value_parser = clap::value_parser!(u8).range(1..=7))]
@@ -173,7 +173,7 @@ impl Cli {
             4 => "Fake packet injection",
             5 => "All active techniques",
             6 => "Aggressive (all + out-of-order, opt-in QUIC)",
-            7 => "Auto-detect (not implemented — same as mode 5)",
+            7 => "Adaptive (mode 5, escalating per site on DPI interference)",
             _ => "Unknown",
         }
     }
@@ -230,11 +230,11 @@ mod tests {
     }
 
     #[test]
-    fn mode_description_marks_mode7_unimplemented() {
+    fn mode_description_says_what_mode7_does() {
         let desc = Cli::mode_description(7);
         assert!(
-            desc.contains("not implemented"),
-            "mode 7 description must admit it is unimplemented, got: {desc:?}"
+            desc.contains("Adaptive") && desc.contains("escalating"),
+            "mode 7 description must say it escalates, got: {desc:?}"
         );
     }
 

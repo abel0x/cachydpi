@@ -9,6 +9,7 @@ pub mod cli;
 pub mod config;
 pub mod dns;
 pub mod dpi_detect;
+pub mod escalation;
 pub mod flow_ttl;
 pub mod helix;
 pub mod hello_resume;

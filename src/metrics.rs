@@ -98,6 +98,8 @@ pub struct Metrics {
     /// the name whole. Counts only — no name is recorded.
     pub sni_syntax_invalid: AtomicU64,
     pub ttl_detections: AtomicU64,
+    /// Mode 7: times a destination was moved to another strategy level.
+    pub escalations: AtomicU64,
     pub ttl_cache_size: AtomicU64,
 
     // ── Error counters ──
@@ -158,6 +160,7 @@ impl Metrics {
             sni_parsed: AtomicU64::new(0),
             sni_syntax_invalid: AtomicU64::new(0),
             ttl_detections: AtomicU64::new(0),
+            escalations: AtomicU64::new(0),
             ttl_cache_size: AtomicU64::new(0),
 
             parse_failures: AtomicU64::new(0),
@@ -273,6 +276,7 @@ impl Metrics {
                 sni_parsed: self.sni_parsed.load(Relaxed),
                 sni_syntax_invalid: self.sni_syntax_invalid.load(Relaxed),
                 ttl_detections: self.ttl_detections.load(Relaxed),
+                escalations: self.escalations.load(Relaxed),
                 ttl_cache_entries: self.ttl_cache_size.load(Relaxed),
             },
             errors: ErrorSnapshot {
@@ -368,6 +372,8 @@ pub struct StrategySnapshot {
     pub sni_parsed: u64,
     pub sni_syntax_invalid: u64,
     pub ttl_detections: u64,
+    #[serde(default)]
+    pub escalations: u64,
     pub ttl_cache_entries: u64,
 }
 

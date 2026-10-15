@@ -2195,3 +2195,151 @@ mod multi_segment_client_hello {
         assert!(matches!(actions[1], PacketAction::Accept));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  Mode 7: per-destination escalation
+// ═══════════════════════════════════════════════════════════════════
+
+mod auto_detect_escalation {
+    use super::*;
+
+    const CLIENT: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 100);
+    const SERVER: Ipv4Addr = Ipv4Addr::new(93, 184, 216, 34);
+
+    fn hello(port: u16) -> Vec<u8> {
+        build_ipv4_tcp_packet(
+            CLIENT,
+            SERVER,
+            port,
+            443,
+            1000,
+            500,
+            tcp::TCP_PSH | tcp::TCP_ACK,
+            64,
+            &build_tls_client_hello("example.com"),
+        )
+    }
+
+    fn from_server(port: u16, flags: u8, ttl: u8) -> Vec<u8> {
+        build_ipv4_tcp_packet(SERVER, CLIENT, 443, port, 5000, 1001, flags, ttl, &[])
+    }
+
+    fn out(engine: &StrategyEngine, pkt: &[u8]) -> PacketAction {
+        engine.evaluate_outbound(&ParsedPacket::parse(pkt, Direction::Outbound).unwrap())
+    }
+
+    fn inb(engine: &StrategyEngine, pkt: &[u8]) -> PacketAction {
+        engine.evaluate_inbound(&ParsedPacket::parse(pkt, Direction::Inbound).unwrap())
+    }
+
+    /// One connection: the server answers from 20 hops, the ClientHello goes
+    /// out, and the DPI resets it from 6 hops nearer.
+    fn blocked_connection(engine: &StrategyEngine, port: u16) -> PacketAction {
+        inb(engine, &from_server(port, tcp::TCP_SYN | tcp::TCP_ACK, 44));
+        let action = out(engine, &hello(port));
+        let rst = inb(engine, &from_server(port, tcp::TCP_RST, 58));
+        assert!(matches!(rst, PacketAction::Drop), "{rst:?}");
+        action
+    }
+
+    fn fakes(action: &PacketAction) -> &[Vec<u8>] {
+        match action {
+            PacketAction::InjectAndFragment { fakes, .. } => fakes,
+            _ => &[],
+        }
+    }
+
+    fn has_fake_rst(action: &PacketAction) -> bool {
+        fakes(action).iter().any(|f| {
+            ParsedPacket::parse(f, Direction::Outbound)
+                .and_then(|p| p.tcp().map(|t| t.is_rst()))
+                .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn interference_moves_a_destination_up_and_round_the_levels() {
+        let engine = StrategyEngine::new(BypassMode::AutoDetect, default_config());
+
+        let level0 = blocked_connection(&engine, 40000);
+        assert!(matches!(level0, PacketAction::Fragment(_)), "{level0:?}");
+        let level1 = blocked_connection(&engine, 40001);
+        assert!(matches!(level1, PacketAction::Fragment(_)), "{level1:?}");
+
+        let level2 = blocked_connection(&engine, 40002);
+        assert!(!fakes(&level2).is_empty(), "level 2 adds fakes: {level2:?}");
+        assert!(!has_fake_rst(&level2));
+        // Fake TTL from this connection's SYN-ACK: 64 - 44 = 20 hops, minus 2.
+        for f in fakes(&level2) {
+            assert_eq!(
+                ParsedPacket::parse(f, Direction::Outbound).unwrap().ttl(),
+                18
+            );
+        }
+
+        let level3 = blocked_connection(&engine, 40003);
+        assert!(
+            has_fake_rst(&level3),
+            "level 3 adds the desync RST: {level3:?}"
+        );
+
+        let wrapped = blocked_connection(&engine, 40004);
+        assert!(
+            matches!(wrapped, PacketAction::Fragment(_)),
+            "back to level 0: {wrapped:?}"
+        );
+    }
+
+    /// A blocked connection often draws several forged packets; they are one
+    /// piece of evidence, not several.
+    #[test]
+    fn several_forged_packets_on_one_connection_count_once() {
+        let mut config = default_config();
+        config.strategies.multi_fragment = false;
+        config.strategies.disorder = false;
+        let engine = StrategyEngine::new(BypassMode::AutoDetect, config);
+
+        blocked_connection(&engine, 40010);
+        inb(
+            &engine,
+            &from_server(40010, tcp::TCP_RST | tcp::TCP_ACK, 58),
+        );
+        inb(&engine, &from_server(40010, tcp::TCP_RST, 59));
+
+        // Level 1: reordered three-way split, no fakes yet.
+        let next = out(&engine, &hello(40011));
+        let PacketAction::Fragment(frags) = &next else {
+            panic!("{next:?}");
+        };
+        assert_eq!(frags.len(), 3, "level 1 forces the multi-fragment split");
+    }
+
+    #[test]
+    fn other_destinations_keep_their_own_level() {
+        let engine = StrategyEngine::new(BypassMode::AutoDetect, default_config());
+        for port in 40020..40022 {
+            blocked_connection(&engine, port);
+        }
+        let other = build_ipv4_tcp_packet(
+            CLIENT,
+            Ipv4Addr::new(203, 0, 113, 9),
+            40030,
+            443,
+            1000,
+            500,
+            tcp::TCP_PSH | tcp::TCP_ACK,
+            64,
+            &build_tls_client_hello("example.com"),
+        );
+        assert!(fakes(&out(&engine, &other)).is_empty());
+    }
+
+    #[test]
+    fn mode_5_does_not_escalate() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        for port in 40040..40045 {
+            let action = blocked_connection(&engine, port);
+            assert!(fakes(&action).is_empty(), "{action:?}");
+        }
+    }
+}

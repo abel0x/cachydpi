@@ -23,7 +23,7 @@ manage_rules = true
 #   4 = Fake packet injection (wrong TTL)
 #   5 = All active techniques (recommended)
 #   6 = Aggressive (all + out-of-order; QUIC desync if quic_desync = true)
-#   7 = Auto-detect
+#   7 = Adaptive (mode 5, adding techniques per site where DPI interferes)
 mode = 5
 
 [strategies]
