@@ -56,7 +56,11 @@ fn jitter(range: usize) -> usize {
     x ^= x << 17;
     state.store(x, Ordering::Relaxed);
 
-    if range == 0 { 0 } else { (x % range as u64) as usize }
+    if range == 0 {
+        0
+    } else {
+        (x % range as u64) as usize
+    }
 }
 
 /// Split a TLS ClientHello packet at the SNI boundary.

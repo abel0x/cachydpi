@@ -177,7 +177,13 @@ impl Metrics {
     ///
     /// `domain_count` is `None` when the configured mode does not consult a
     /// list, which is not the same as a list that loaded zero domains.
-    pub fn init(&self, mode: u8, config_file: &str, domain_mode: &str, domain_count: Option<usize>) {
+    pub fn init(
+        &self,
+        mode: u8,
+        config_file: &str,
+        domain_mode: &str,
+        domain_count: Option<usize>,
+    ) {
         self.start_epoch_ms.store(epoch_ms(), Relaxed);
         self.pid.store(std::process::id() as u64, Relaxed);
         self.mode.store(mode, Relaxed);

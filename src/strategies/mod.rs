@@ -294,7 +294,10 @@ impl StrategyEngine {
             self.record_forged_rst_source(packet.src_addr());
             METRICS.push_event(
                 EventLevel::Warning,
-                format!("forged RST from {}", crate::logging::peer(packet.src_addr())),
+                format!(
+                    "forged RST from {}",
+                    crate::logging::peer(packet.src_addr())
+                ),
             );
             debug!(
                 src = %crate::logging::peer(packet.src_addr()),
@@ -311,7 +314,10 @@ impl StrategyEngine {
                     .fetch_add(1, Ordering::Relaxed);
                 METRICS.push_event(
                     EventLevel::Warning,
-                    format!("forged redirect from {}", crate::logging::peer(packet.src_addr())),
+                    format!(
+                        "forged redirect from {}",
+                        crate::logging::peer(packet.src_addr())
+                    ),
                 );
                 debug!(
                     src = %crate::logging::peer(packet.src_addr()),
@@ -327,7 +333,10 @@ impl StrategyEngine {
                 METRICS.forged_alert_drops.fetch_add(1, Ordering::Relaxed);
                 METRICS.push_event(
                     EventLevel::Warning,
-                    format!("forged TLS alert from {}", crate::logging::peer(packet.src_addr())),
+                    format!(
+                        "forged TLS alert from {}",
+                        crate::logging::peer(packet.src_addr())
+                    ),
                 );
                 debug!(
                     src = %crate::logging::peer(packet.src_addr()),
@@ -798,7 +807,7 @@ impl StrategyEngine {
         for (name, reason) in [
             (
                 "fake packets",
-                (!self.fake_enabled()).then(|| {
+                (!self.fake_enabled()).then_some({
                     if s.fake_packet_enabled {
                         "not applied in this mode"
                     } else {
@@ -808,7 +817,7 @@ impl StrategyEngine {
             ),
             (
                 "TCP window size",
-                (!self.should_modify_window()).then(|| {
+                (!self.should_modify_window()).then_some({
                     if s.tcp_window_size > 0 {
                         "not applied in this mode"
                     } else {
@@ -818,7 +827,7 @@ impl StrategyEngine {
             ),
             (
                 "QUIC desync",
-                (!(quic_mode && s.quic_desync)).then(|| {
+                (!(quic_mode && s.quic_desync)).then_some({
                     if s.quic_desync {
                         "only applied in mode 6 (aggressive)"
                     } else {

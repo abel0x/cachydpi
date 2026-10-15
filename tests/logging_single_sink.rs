@@ -103,7 +103,10 @@ fn the_deprecation_notice_is_a_structured_event() {
         .unwrap_or_else(|| panic!("no deprecation notice in output:\n{output}"));
 
     // The markers a bare print cannot produce.
-    assert!(notice.contains("WARN"), "notice must carry a level: {notice}");
+    assert!(
+        notice.contains("WARN"),
+        "notice must carry a level: {notice}"
+    );
     assert!(
         notice.contains("cachydpi::config"),
         "notice must carry its target: {notice}"

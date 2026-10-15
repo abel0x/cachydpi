@@ -285,7 +285,10 @@ fn sni_syntax_rejects_what_a_misread_offset_would_produce() {
         (".leading.dot", "empty first label"),
         ("trailing.dot.", "empty last label"),
         ("double..dot", "empty middle label"),
-        ("has_underscore.com", "underscore is not legal in a hostname"),
+        (
+            "has_underscore.com",
+            "underscore is not legal in a hostname",
+        ),
         ("has space.com", "space"),
         ("binary\u{0}.com", "nul byte — random bytes read as a name"),
         (over_limit.as_str(), "over 253 bytes"),
@@ -381,7 +384,9 @@ fn whitelist_built_from_inline_list_via_load() {
     config.domains.mode = DomainMode::Exempt;
     config.domains.exempt = vec!["Safe.COM".to_string(), "trusted.org".to_string()];
 
-    config.load_domain_lists().expect("load_domain_lists should succeed");
+    config
+        .load_domain_lists()
+        .expect("load_domain_lists should succeed");
 
     // Set was built from the inline list and lowercased.
     assert_eq!(config.domain_set.len(), 2);

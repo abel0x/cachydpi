@@ -73,8 +73,8 @@ pub fn preflight_drop_root() -> Result<()> {
              ambient and nftables teardown would fail after switching user"
         );
     }
-    let permitted =
-        caps::read(None, caps::CapSet::Permitted).context("failed to read permitted capabilities")?;
+    let permitted = caps::read(None, caps::CapSet::Permitted)
+        .context("failed to read permitted capabilities")?;
     for &cap in RETAINED_CAPS {
         if !permitted.contains(&cap) {
             bail!("{cap:?} is not in the permitted set; cannot retain it across setuid");
@@ -153,7 +153,9 @@ fn classify_rehearsal(status: nix::Result<nix::sys::wait::WaitStatus>) -> Rehear
         Ok(WaitStatus::Signaled(_, signal, _)) => {
             Rehearsal::Inconclusive(format!("the rehearsal was killed by {signal:?}"))
         }
-        Ok(other) => Rehearsal::Inconclusive(format!("the rehearsal ended unexpectedly: {other:?}")),
+        Ok(other) => {
+            Rehearsal::Inconclusive(format!("the rehearsal ended unexpectedly: {other:?}"))
+        }
         Err(e) => Rehearsal::Inconclusive(format!("could not wait for the rehearsal: {e}")),
     }
 }
@@ -215,11 +217,14 @@ fn verify_dropped_state() -> Result<()> {
         // Ambient is what actually survives execve into the `nft` child;
         // inheritable alone grants a non-root child nothing.
         if !caps::has_cap(None, caps::CapSet::Ambient, cap).unwrap_or(false) {
-            bail!("{cap:?} missing from the ambient set — child processes such as nft would run without it");
+            bail!(
+                "{cap:?} missing from the ambient set — child processes such as nft would run without it"
+            );
         }
     }
     // What we deliberately gave up must really be gone.
-    if caps::has_cap(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_RAW).unwrap_or(false) {
+    if caps::has_cap(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_RAW).unwrap_or(false)
+    {
         bail!("CAP_NET_RAW is still permitted after the drop");
     }
     Ok(())
@@ -353,6 +358,15 @@ pub fn drop_root() -> Result<()> {
     Ok(())
 }
 
+/// Set the process name for ps/htop visibility
+pub fn set_process_name() {
+    // Set comm name via prctl
+    unsafe {
+        let name = b"cachydpi\0";
+        libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,7 +384,9 @@ mod tests {
             return None;
         }
         if no_new_privs() {
-            crate::testing::skip_unless_required("NoNewPrivileges is set, the setuid path cannot run");
+            crate::testing::skip_unless_required(
+                "NoNewPrivileges is set, the setuid path cannot run",
+            );
             return None;
         }
         match nix::unistd::User::from_name("cachydpi") {
@@ -393,7 +409,9 @@ mod tests {
             Ok(ForkResult::Parent { child }) => match nix::sys::wait::waitpid(child, None) {
                 Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => Some(code),
                 other => {
-                    crate::testing::skip_unless_required(&format!("child did not exit normally: {other:?}"));
+                    crate::testing::skip_unless_required(&format!(
+                        "child did not exit normally: {other:?}"
+                    ));
                     None
                 }
             },
@@ -490,7 +508,9 @@ mod tests {
             Some(OK) => {}
             Some(PERMITTED_LOST) => panic!("PR_SET_KEEPCAPS did not preserve the permitted set"),
             Some(EFFECTIVE_SURVIVED) => {
-                panic!("effective set survived the uid change — the manual re-raise assumption is wrong")
+                panic!(
+                    "effective set survived the uid change — the manual re-raise assumption is wrong"
+                )
             }
             Some(RERAISE_FAILED) => panic!("re-raising effective/inheritable/ambient failed"),
             Some(other) => panic!("child could not reach the assertions (code {other})"),
@@ -524,22 +544,14 @@ mod tests {
             if nix::unistd::geteuid().is_root() {
                 return STILL_ROOT;
             }
-            if !caps::has_cap(
-                None,
-                caps::CapSet::Ambient,
-                caps::Capability::CAP_NET_ADMIN,
-            )
-            .unwrap_or(false)
+            if !caps::has_cap(None, caps::CapSet::Ambient, caps::Capability::CAP_NET_ADMIN)
+                .unwrap_or(false)
             {
                 return AMBIENT_MISSING;
             }
             // CAP_NET_RAW was only needed to open the sockets; it must be gone.
-            if caps::has_cap(
-                None,
-                caps::CapSet::Permitted,
-                caps::Capability::CAP_NET_RAW,
-            )
-            .unwrap_or(false)
+            if caps::has_cap(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_RAW)
+                .unwrap_or(false)
             {
                 return NET_RAW_RETAINED;
             }
@@ -558,22 +570,17 @@ mod tests {
         match code {
             None => {}
             Some(OK) => {}
-            Some(AMBIENT_MISSING) => panic!("CAP_NET_ADMIN is not in the ambient set after the drop"),
-            Some(NET_RAW_RETAINED) => panic!("CAP_NET_RAW was retained even though it is not needed"),
+            Some(AMBIENT_MISSING) => {
+                panic!("CAP_NET_ADMIN is not in the ambient set after the drop")
+            }
+            Some(NET_RAW_RETAINED) => {
+                panic!("CAP_NET_RAW was retained even though it is not needed")
+            }
             Some(CHILD_NFT_FAILED) => {
                 panic!("child nft could not manage rules — ambient capability did not reach it")
             }
             Some(STILL_ROOT) => panic!("drop_root reported success but the process is still root"),
             Some(other) => panic!("privilege drop failed (code {other})"),
         }
-    }
-}
-
-/// Set the process name for ps/htop visibility
-pub fn set_process_name() {
-    // Set comm name via prctl
-    unsafe {
-        let name = b"cachydpi\0";
-        libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0);
     }
 }

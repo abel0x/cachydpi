@@ -30,7 +30,11 @@ fn identifying_fields_are_logged_only_through_the_redaction_helper() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     rust_sources(&src, &mut files);
-    assert!(!files.is_empty(), "no sources found under {}", src.display());
+    assert!(
+        !files.is_empty(),
+        "no sources found under {}",
+        src.display()
+    );
 
     let mut offenders = Vec::new();
 
@@ -81,21 +85,20 @@ fn identifying_fields_are_logged_only_through_the_redaction_helper() {
 /// that identifies a peer.
 #[test]
 fn the_metrics_snapshot_exposes_no_identifying_values() {
-    let metrics = fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/metrics.rs"),
-    )
-    .unwrap();
+    let metrics =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/metrics.rs"))
+            .unwrap();
 
     // Counts, ratios and timestamps cannot hold an address; free text can, and
     // that is exactly how peer addresses reached this socket before. So every
     // textual field has to be a deliberate, listed decision rather than
     // something that slipped in with a new counter.
     const TEXT_FIELDS_REVIEWED_FOR_IDENTITY: &[&str] = &[
-        "version",      // crate version
-        "mode_name",    // "AllActive", …
-        "domain_mode",  // "none" / "blacklist" / "exempt" — the mode, not a domain
-        "config_file",  // path to the config
-        "message",      // event text; peers in it go through logging::peer()
+        "version",     // crate version
+        "mode_name",   // "AllActive", …
+        "domain_mode", // "none" / "blacklist" / "exempt" — the mode, not a domain
+        "config_file", // path to the config
+        "message",     // event text; peers in it go through logging::peer()
     ];
 
     let mut offenders = Vec::new();
@@ -135,10 +138,9 @@ fn the_metrics_snapshot_exposes_no_identifying_values() {
 /// to ask for browsing data rather than inherit it.
 #[test]
 fn the_privacy_switches_default_to_off() {
-    let config = fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/config.rs"),
-    )
-    .unwrap();
+    let config =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/config.rs"))
+            .unwrap();
 
     for field in ["log_identifying_fields", "log_packet_bytes"] {
         assert!(
@@ -148,10 +150,9 @@ fn the_privacy_switches_default_to_off() {
     }
 
     // …and the shipped config must not turn them on either.
-    let shipped = fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/config.toml"),
-    )
-    .unwrap();
+    let shipped =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/config.toml"))
+            .unwrap();
     for line in shipped.lines() {
         let line = line.trim();
         if line.starts_with('#') {

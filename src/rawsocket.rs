@@ -515,9 +515,7 @@ mod tests {
                 socket.socket_v6.is_none(),
                 "ipv6=false must not create an IPv6 socket"
             ),
-            Err(_) => crate::testing::skip_unless_required(
-                "no CAP_NET_RAW (try `unshare -Urn`)",
-            ),
+            Err(_) => crate::testing::skip_unless_required("no CAP_NET_RAW (try `unshare -Urn`)"),
         }
     }
 

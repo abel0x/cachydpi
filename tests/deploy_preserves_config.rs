@@ -20,8 +20,11 @@ fn stub_bin(dir: &Path) -> PathBuf {
         let path = bin.join(name);
         // `systemctl is-active` must report a healthy service or the script
         // treats the deploy as failed and exits non-zero.
-        fs::write(&path, "#!/bin/sh\nif [ \"$1\" = \"is-active\" ]; then echo active; fi\nexit 0\n")
-            .unwrap();
+        fs::write(
+            &path,
+            "#!/bin/sh\nif [ \"$1\" = \"is-active\" ]; then echo active; fi\nexit 0\n",
+        )
+        .unwrap();
         let mut perms = fs::metadata(&path).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         fs::set_permissions(&path, perms).unwrap();

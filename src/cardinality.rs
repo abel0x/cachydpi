@@ -9,7 +9,7 @@
 // registers that hold nothing but small integers, so there is nothing to leak
 // and no capacity to run out of.
 
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 
 /// log2 of the register count. 2^11 registers, one byte each, is 2 KiB of
 /// fixed state for a standard error around 2.3% — accurate enough to tell "one
@@ -41,9 +41,7 @@ impl DistinctCounter {
 
     /// Record an observation. The value is hashed and discarded.
     pub fn insert<T: Hash>(&mut self, value: &T) {
-        let mut h = self.hasher.build_hasher();
-        value.hash(&mut h);
-        let hash = h.finish();
+        let hash = self.hasher.hash_one(value);
 
         // Top PRECISION bits pick the register; the rest gives the rank, the
         // position of the first set bit.
@@ -141,7 +139,11 @@ mod tests {
         }
         let got = c.estimate() as f64;
         let error = (got - n as f64).abs() / n as f64;
-        assert!(error < 0.05, "error {:.3} estimating {n} (got {got})", error);
+        assert!(
+            error < 0.05,
+            "error {:.3} estimating {n} (got {got})",
+            error
+        );
     }
 
     /// Fixed state, whatever it is fed: no capacity to exhaust, so no

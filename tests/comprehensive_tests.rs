@@ -402,7 +402,10 @@ mod http_fuzzing {
         // (see unit_tests::http_host_parsed_despite_binary_body).
         let parsed = http::HttpRequest::parse(&data).expect("valid request line should parse");
         assert_eq!(parsed.method, "GET");
-        assert!(parsed.host.is_none(), "no Host header present in the garbage");
+        assert!(
+            parsed.host.is_none(),
+            "no Host header present in the garbage"
+        );
     }
 
     #[test]
@@ -693,9 +696,7 @@ mod tcp_fuzzing {
         let mut data = vec![0u8; 42]; // 32 + 10 payload
         data[12] = 0x80; // data_offset = 8 (32 bytes header)
         data[13] = tcp::TCP_PSH | tcp::TCP_ACK;
-        for i in 32..42 {
-            data[i] = 0x41; // 'A'
-        }
+        data[32..42].fill(0x41); // 'A'
         let parsed = TcpHeader::parse(&data).unwrap();
         assert_eq!(parsed.options.len(), 12);
         assert_eq!(parsed.payload.len(), 10);

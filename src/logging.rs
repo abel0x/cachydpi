@@ -81,27 +81,6 @@ pub fn warn_about_sensitive_logging(config: &LogConfig) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The switch is what decides, not the log level: raising the level while
-    /// debugging must not start recording where the user connects.
-    #[test]
-    fn peer_values_are_withheld_unless_the_switch_is_on() {
-        set_identifying_fields(false);
-        assert_eq!(peer("example.com").to_string(), REDACTED);
-        assert_eq!(peer("2600:1901:0:5e8a::").to_string(), REDACTED);
-
-        set_identifying_fields(true);
-        assert_eq!(peer("example.com").to_string(), "example.com");
-
-        // Leave the process-wide default as it starts.
-        set_identifying_fields(false);
-        assert_eq!(peer("example.com").to_string(), REDACTED);
-    }
-}
-
 /// Initialize the logging subsystem based on config
 pub fn init(config: &LogConfig, verbose: u8) -> Result<()> {
     set_identifying_fields(config.log_identifying_fields);
@@ -182,4 +161,25 @@ pub fn init(config: &LogConfig, verbose: u8) -> Result<()> {
         .init();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The switch is what decides, not the log level: raising the level while
+    /// debugging must not start recording where the user connects.
+    #[test]
+    fn peer_values_are_withheld_unless_the_switch_is_on() {
+        set_identifying_fields(false);
+        assert_eq!(peer("example.com").to_string(), REDACTED);
+        assert_eq!(peer("2600:1901:0:5e8a::").to_string(), REDACTED);
+
+        set_identifying_fields(true);
+        assert_eq!(peer("example.com").to_string(), "example.com");
+
+        // Leave the process-wide default as it starts.
+        set_identifying_fields(false);
+        assert_eq!(peer("example.com").to_string(), REDACTED);
+    }
 }

@@ -361,7 +361,8 @@ impl Config {
         })?;
 
         // Recorded now, reported by log_deferred_notices() once logging exists.
-        config.uses_deprecated_domain_spelling = config_uses_deprecated_whitelist_spelling(&content);
+        config.uses_deprecated_domain_spelling =
+            config_uses_deprecated_whitelist_spelling(&content);
 
         debug!("loaded config from {}", path.display());
         Ok(config)
@@ -770,7 +771,11 @@ mod load_tests {
     fn domains_section_without_mode_is_a_hard_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[domains]\nblacklist_file = \"/etc/cachydpi/blacklist.txt\"\n").unwrap();
+        fs::write(
+            &path,
+            "[domains]\nblacklist_file = \"/etc/cachydpi/blacklist.txt\"\n",
+        )
+        .unwrap();
         assert!(
             Config::load(&path).is_err(),
             "[domains] without a mode must be rejected"
@@ -811,7 +816,10 @@ mod load_tests {
             ("only an unrelated section", "[general]\nmode = 5\n"),
             ("nul bytes", "\0\0\0\0"),
             ("html error page", "<!DOCTYPE html><h1>404</h1>"),
-            ("domains section without mode", "[domains]\nblacklist = []\n"),
+            (
+                "domains section without mode",
+                "[domains]\nblacklist = []\n",
+            ),
         ] {
             let path = dir.path().join(format!("{}.toml", name.replace(' ', "-")));
             fs::write(&path, body).unwrap();
@@ -1083,7 +1091,10 @@ mod override_tests {
         );
 
         config.general.queue_num = 65534; // inbound = 65535, the highest valid
-        assert!(config.validate().is_ok(), "queue_num 65534 must be accepted");
+        assert!(
+            config.validate().is_ok(),
+            "queue_num 65534 must be accepted"
+        );
 
         config.general.queue_num = 200; // shipped default
         assert!(config.validate().is_ok());

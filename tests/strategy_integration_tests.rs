@@ -22,6 +22,7 @@ use cachydpi::strategies::{BypassMode, PacketAction, StrategyEngine};
 // ═══════════════════════════════════════════════════════════════════
 
 /// Build a complete IPv4+TCP packet with given parameters
+#[allow(clippy::too_many_arguments)]
 fn build_ipv4_tcp_packet(
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
@@ -151,7 +152,7 @@ fn build_rst_packet(window: u16, ttl: u8, flags: u8, options: &[u8]) -> Vec<u8> 
     let dst_port: u16 = 12345;
 
     let data_offset_bytes = 20 + options.len();
-    let data_offset = ((data_offset_bytes + 3) / 4) as u8; // round up to 4-byte boundary
+    let data_offset = data_offset_bytes.div_ceil(4) as u8; // round up to 4-byte boundary
     let padded_header_len = (data_offset as usize) * 4;
 
     let mut tcp_seg = Vec::with_capacity(padded_header_len);
@@ -770,7 +771,10 @@ mod evaluate_outbound_misc {
         // Mode 6 desyncs QUIC when it is asked for; mode 7 behaves as mode 5
         let mut cfg = default_config();
         cfg.strategies.quic_desync = true;
-        for (mode, desyncs) in [(BypassMode::Aggressive, true), (BypassMode::AutoDetect, false)] {
+        for (mode, desyncs) in [
+            (BypassMode::Aggressive, true),
+            (BypassMode::AutoDetect, false),
+        ] {
             let engine = StrategyEngine::new(mode, cfg.clone());
             let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
             let action = engine.evaluate_outbound(&parsed);
@@ -931,7 +935,10 @@ mod evaluate_inbound {
     #[test]
     fn rst_at_the_servers_hop_count_is_accepted() {
         let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
-        assert!(matches!(inbound(&engine, &build_syn_ack_packet(52)), PacketAction::Accept));
+        assert!(matches!(
+            inbound(&engine, &build_syn_ack_packet(52)),
+            PacketAction::Accept
+        ));
         for flags in [tcp::TCP_RST, tcp::TCP_RST | tcp::TCP_ACK] {
             let action = inbound(&engine, &build_rst_packet(0, 52, flags, &[]));
             assert!(
@@ -1378,11 +1385,17 @@ mod fake_packet_tests {
             3,
             &config_with_fake_packets(),
         );
-        fakes.extend(fake_packet::create_fake_rst_desync(&pkt, &parsed.ip, tcp_hdr, 3));
+        fakes.extend(fake_packet::create_fake_rst_desync(
+            &pkt, &parsed.ip, tcp_hdr, 3,
+        ));
         assert!(!fakes.is_empty());
 
         for fake in &fakes {
-            assert_eq!(fake[0..4], pkt[0..4], "version, traffic class and flow label");
+            assert_eq!(
+                fake[0..4],
+                pkt[0..4],
+                "version, traffic class and flow label"
+            );
             let declared = u16::from_be_bytes([fake[4], fake[5]]) as usize;
             assert_eq!(declared, fake.len() - 40, "payload length");
         }

@@ -110,7 +110,10 @@ fn print_list_summary(blacklist_file: &str) {
     print!("\n  List mode: ");
     match count_list_domains(blacklist_file) {
         Some(count) => println!("{} domains in {} will be bypassed.", count, blacklist_file),
-        None => println!("{} not found — no domains will be filtered.", blacklist_file),
+        None => println!(
+            "{} not found — no domains will be filtered.",
+            blacklist_file
+        ),
     }
 }
 
