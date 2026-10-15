@@ -11,6 +11,7 @@ pub mod dns;
 pub mod dpi_detect;
 pub mod escalation;
 pub mod flow_ttl;
+pub mod handshake_watch;
 pub mod helix;
 pub mod hello_resume;
 pub mod logging;

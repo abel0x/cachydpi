@@ -204,6 +204,8 @@ pub struct StrategyEngine {
     hello_resume: crate::hello_resume::HelloResumeTable,
     /// Mode 7's per-destination strategy level.
     escalation: crate::escalation::EscalationTable,
+    /// Mode 7: whether each ClientHello has been answered yet.
+    handshakes: crate::handshake_watch::HandshakeWatch,
 }
 
 impl StrategyEngine {
@@ -216,6 +218,7 @@ impl StrategyEngine {
             flows: crate::flow_ttl::FlowTtlTable::new(),
             hello_resume: crate::hello_resume::HelloResumeTable::new(),
             escalation: crate::escalation::EscalationTable::new(),
+            handshakes: crate::handshake_watch::HandshakeWatch::new(),
         }
     }
 
@@ -281,6 +284,14 @@ impl StrategyEngine {
 
             // TLS ClientHello (port 443)
             if tcp.is_https_port() && packet::tls::is_tls_client_hello(tcp.payload) {
+                // The same ClientHello again, with no answer in between: the
+                // kernel is retransmitting into a blackhole.
+                if matches!(self.mode, BypassMode::AutoDetect) {
+                    let flow = Self::outbound_flow(packet, tcp);
+                    if self.handshakes.client_hello_sent(&flow, tcp.seq_num) {
+                        self.escalate(&flow);
+                    }
+                }
                 debug!(
                     dport = tcp.dst_port,
                     payload_len = tcp.payload.len(),
@@ -337,9 +348,11 @@ impl StrategyEngine {
         if !self.passive_enabled() {
             return PacketAction::Accept;
         }
-        let flow = self.flows.lookup(&flow);
+        let flow_key = flow;
+        let flow = self.flows.lookup(&flow_key);
 
         // Check for forged RST packets
+        let adaptive = matches!(self.mode, BypassMode::AutoDetect);
         if tcp.is_rst() && passive::is_forged_rst_on_flow(packet, flow) {
             self.note_interference(packet, tcp);
             METRICS.forged_rst_drops.fetch_add(1, Ordering::Relaxed);
@@ -356,6 +369,12 @@ impl StrategyEngine {
                 "dropping forged RST packet from DPI"
             );
             return PacketAction::Drop;
+        }
+
+        // An RST that passed as the server's own, before the server sent a
+        // byte: the handshake was still cut when the name went out.
+        if adaptive && tcp.is_rst() && self.handshakes.awaiting_answer(&flow_key) {
+            self.escalate(&flow_key);
         }
 
         // Check for forged HTTP redirects
@@ -398,6 +417,10 @@ impl StrategyEngine {
                 );
                 return PacketAction::Drop;
             }
+        }
+
+        if adaptive && tcp.has_payload() && !tcp.is_rst() {
+            self.handshakes.server_answered(&flow_key);
         }
 
         PacketAction::Accept
@@ -528,11 +551,22 @@ impl StrategyEngine {
 
     /// In mode 7, move the destination of an inbound forged packet up a level.
     fn note_interference(&self, packet: &ParsedPacket<'_>, tcp: &packet::tcp::TcpHeader<'_>) {
+        self.escalate(&crate::flow_ttl::FlowKey {
+            server: packet.src_addr(),
+            client: packet.dst_addr(),
+            server_port: tcp.src_port,
+            client_port: tcp.dst_port,
+        });
+    }
+
+    /// In mode 7, move a connection's destination up a level. Each
+    /// connection counts once however many signs of interference it shows.
+    fn escalate(&self, flow: &crate::flow_ttl::FlowKey) {
         if !matches!(self.mode, BypassMode::AutoDetect) {
             return;
         }
-        let server = packet.src_addr();
-        let connection = (packet.dst_addr(), tcp.dst_port, tcp.src_port);
+        let server = flow.server;
+        let connection = (flow.client, flow.client_port, flow.server_port);
         if let Some(level) = self.escalation.note_interference(server, &connection) {
             METRICS.escalations.fetch_add(1, Ordering::Relaxed);
             info!(

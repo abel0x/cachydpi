@@ -2304,6 +2304,90 @@ mod auto_detect_escalation {
         assert!(fakes(&out(&engine, &other)).is_empty());
     }
 
+    /// A blackholed ClientHello draws no forged packet at all; the only sign
+    /// is the kernel sending it again, at the same sequence number.
+    #[test]
+    fn a_retransmitted_client_hello_counts_as_interference() {
+        let mut config = default_config();
+        config.strategies.multi_fragment = false;
+        config.strategies.disorder = false;
+        let engine = StrategyEngine::new(BypassMode::AutoDetect, config);
+        inb(
+            &engine,
+            &from_server(40050, tcp::TCP_SYN | tcp::TCP_ACK, 44),
+        );
+        let first = out(&engine, &hello(40050));
+        let PacketAction::Fragment(f) = &first else {
+            panic!("{first:?}")
+        };
+        assert_eq!(f.len(), 2, "level 0: the configured two-way split");
+        out(&engine, &hello(40050)); // retransmission: no answer came
+        let next = out(&engine, &hello(40051));
+        let PacketAction::Fragment(f) = &next else {
+            panic!("{next:?}")
+        };
+        assert_eq!(f.len(), 3, "level 1 after a retransmission");
+    }
+
+    /// An RST that copies the server's TTL passes as the server's own, but one
+    /// arriving before the server has said anything still ends a handshake
+    /// that the name was blocked in.
+    #[test]
+    fn a_reset_before_the_server_answers_counts_as_interference() {
+        let mut config = default_config();
+        config.strategies.multi_fragment = false;
+        config.strategies.disorder = false;
+        let engine = StrategyEngine::new(BypassMode::AutoDetect, config);
+        inb(
+            &engine,
+            &from_server(40060, tcp::TCP_SYN | tcp::TCP_ACK, 44),
+        );
+        out(&engine, &hello(40060));
+        let rst = inb(&engine, &from_server(40060, tcp::TCP_RST, 44));
+        assert!(
+            matches!(rst, PacketAction::Accept),
+            "same hop count: not dropped"
+        );
+        let next = out(&engine, &hello(40061));
+        let PacketAction::Fragment(f) = &next else {
+            panic!("{next:?}")
+        };
+        assert_eq!(f.len(), 3, "but the destination moves up a level");
+    }
+
+    /// Once the server has answered, its RST is ordinary connection teardown.
+    #[test]
+    fn a_reset_after_the_server_answered_is_not_interference() {
+        let mut config = default_config();
+        config.strategies.multi_fragment = false;
+        config.strategies.disorder = false;
+        let engine = StrategyEngine::new(BypassMode::AutoDetect, config);
+        inb(
+            &engine,
+            &from_server(40070, tcp::TCP_SYN | tcp::TCP_ACK, 44),
+        );
+        out(&engine, &hello(40070));
+        let server_hello = build_ipv4_tcp_packet(
+            SERVER,
+            CLIENT,
+            443,
+            40070,
+            5001,
+            1100,
+            tcp::TCP_ACK,
+            44,
+            &[0x16; 600],
+        );
+        inb(&engine, &server_hello);
+        inb(&engine, &from_server(40070, tcp::TCP_RST, 44));
+        out(&engine, &hello(40070)); // a new ClientHello at the same seq is not a retransmission now
+        let next = out(&engine, &hello(40071));
+        let PacketAction::Fragment(f) = &next else {
+            panic!("{next:?}")
+        };
+        assert_eq!(f.len(), 2, "still level 0");
+    }
+
     #[test]
     fn mode_5_does_not_escalate() {
         let engine = StrategyEngine::new(BypassMode::AllActive, default_config());

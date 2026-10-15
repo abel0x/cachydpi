@@ -24,6 +24,7 @@ pub struct NftRules {
     queue_num: u16,
     ipv6: bool,
     quic: bool,
+    adaptive: bool,
     installed: bool,
 }
 
@@ -45,6 +46,7 @@ impl NftRules {
             queue_num,
             ipv6,
             quic: false,
+            adaptive: false,
             installed: false,
         }
     }
@@ -54,6 +56,14 @@ impl NftRules {
     /// make a round trip through the daemon to be accepted unchanged.
     pub fn with_quic(mut self, quic: bool) -> Self {
         self.quic = quic;
+        self
+    }
+
+    /// Queue the server's first large reply packets, for mode 7: an answer
+    /// tells it the handshake got through, and an RST before any answer that
+    /// it did not.
+    pub fn with_adaptive(mut self, adaptive: bool) -> Self {
+        self.adaptive = adaptive;
         self
     }
 
@@ -68,6 +78,14 @@ impl NftRules {
             format!(
                 "        udp dport 443 ct original packets <= 4 queue num {} bypass\n",
                 self.queue_num
+            )
+        } else {
+            String::new()
+        };
+        let answers = if self.adaptive {
+            format!(
+                "        tcp sport 443 tcp flags & ack == ack meta length >= 120 ct reply packets <= 4 queue num {} bypass\n",
+                self.queue_num + 1
             )
         } else {
             String::new()
@@ -114,7 +132,7 @@ table {family} {table} {{
 
         # Small TLS records early in a connection, for injected alerts
         tcp sport 443 tcp flags & (psh|ack) == psh|ack meta length < 120 ct reply packets <= {in_pkts} queue num {queue_in} bypass
-    }}
+{answers}    }}
 }}
 "#,
                     table = NFT_TABLE,
@@ -331,6 +349,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn server_answers_are_queued_only_for_mode_7() {
+        let plain = NftRules::new(200, false).ruleset_script();
+        assert!(!plain.contains("meta length >= 120"));
+        let adaptive = NftRules::new(200, false)
+            .with_adaptive(true)
+            .ruleset_script();
+        assert!(
+            line_with(&adaptive, "meta length >= 120")
+                .contains("ct reply packets <= 4 queue num 201")
+        );
+    }
+
     /// QUIC used to be queued whole whether or not anything would act on it.
     #[test]
     fn quic_is_queued_only_when_desync_will_use_it() {
@@ -353,6 +384,23 @@ mod tests {
             ip.trim().replace("table ip ", ""),
             ip6.trim().replace("table ip6 ", "")
         );
+    }
+
+    /// The optional rules are only text until nft accepts them.
+    #[test]
+    fn every_optional_rule_installs() {
+        let _guard = NFT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if !nft_writable() {
+            return;
+        }
+        let mut rules = NftRules::new(200, true).with_quic(true).with_adaptive(true);
+        rules
+            .install()
+            .expect("nft must accept the QUIC and mode 7 rules");
+        let dump = ruleset_dump();
+        assert!(dump.contains("udp dport 443"), "{dump}");
+        assert!(dump.contains("ct reply packets <= 4"), "{dump}");
+        rules.remove().unwrap();
     }
 
     /// The regression: an ip6 table installed while ipv6 was enabled must be
