@@ -5,6 +5,20 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-10-15
+
+### Added
+
+- **`cachydpi dns status | enable | disable`.** A site blocked by DNS resolves
+  to the ISP's block page before any packet reaches CachyDPI, so no bypass
+  mode helps with it. `status` reports whether lookups are encrypted. `enable`
+  turns on strict DNS-over-TLS through systemd-resolved with the bundled
+  servers: it first checks they answer on port 853 and changes nothing if
+  none do, then rolls back if names stop resolving, so it cannot leave the
+  machine without DNS. `disable` removes only the drop-in `enable` installed.
+- The daemon warns at startup when DNS is not encrypted, and `cachydpi status`
+  shows the DNS state.
+
 ## [1.3.1] — 2026-10-15
 
 ### Fixed
