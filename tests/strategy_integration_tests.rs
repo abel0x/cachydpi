@@ -2174,15 +2174,19 @@ mod multi_segment_client_hello {
         );
     }
 
+    /// A lost segment is sent again whole. Letting the retransmission through
+    /// unsplit would show the DPI the name in one piece on exactly the
+    /// connections that already had trouble.
     #[test]
-    fn a_retransmitted_second_segment_passes_unchanged() {
+    fn a_retransmitted_second_segment_is_split_again() {
         let hello = client_hello("discord.com", &large_extensions(), &[]);
         let pkts = segments(&hello, 1448);
         let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
         let first = run(&engine, &pkts);
         assert!(is_split(&first[1]));
         let again = run(&engine, &pkts[1..]);
-        assert!(matches!(again[0], PacketAction::Accept), "{:?}", again[0]);
+        assert!(is_split(&again[0]), "{:?}", again[0]);
+        assert_eq!(sent_bytes(&pkts[1], &again[0]), hello[1448..]);
     }
 
     #[test]

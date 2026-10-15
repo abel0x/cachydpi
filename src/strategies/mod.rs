@@ -653,7 +653,7 @@ impl StrategyEngine {
         packet: &ParsedPacket<'_>,
         tcp: &packet::tcp::TcpHeader<'_>,
     ) -> Option<PacketAction> {
-        let (next_seq, remaining) = self.hello_resume.take(&Self::outbound_flow(packet, tcp))?;
+        let (next_seq, remaining) = self.hello_resume.get(&Self::outbound_flow(packet, tcp))?;
         // A header before this segment's start means a retransmission or a
         // reordered segment; there is nothing here to resume from.
         let next = next_seq.wrapping_sub(tcp.seq_num);

@@ -55,17 +55,14 @@ impl HelloResumeTable {
         self.slots[index].store(value, Ordering::Relaxed);
     }
 
-    /// Take this flow's entry, leaving the slot empty.
-    pub fn take(&self, key: &FlowKey) -> Option<(u32, u16)> {
+    /// This flow's entry, if it has one. The entry stays: a retransmission of
+    /// the segment it points into needs it again.
+    pub fn get(&self, key: &FlowKey) -> Option<(u32, u16)> {
         let (index, tag) = self.locate(key);
-        let slot = &self.slots[index];
-        let value = slot.load(Ordering::Relaxed);
+        let value = self.slots[index].load(Ordering::Relaxed);
         if value & (0xFFFF << 48) != tag {
             return None;
         }
-        // Lose a race with a store for another flow rather than erase it.
-        slot.compare_exchange(value, 0, Ordering::Relaxed, Ordering::Relaxed)
-            .ok()?;
         Some(((value >> 16) as u32, value as u16))
     }
 }
@@ -85,11 +82,11 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_is_read_once() {
+    fn an_entry_belongs_to_its_flow_and_survives_reading() {
         let table = HelloResumeTable::new();
         table.store(&key(1), 0xFFFF_FFF0, 1234);
-        assert_eq!(table.take(&key(2)), None);
-        assert_eq!(table.take(&key(1)), Some((0xFFFF_FFF0, 1234)));
-        assert_eq!(table.take(&key(1)), None);
+        assert_eq!(table.get(&key(2)), None);
+        assert_eq!(table.get(&key(1)), Some((0xFFFF_FFF0, 1234)));
+        assert_eq!(table.get(&key(1)), Some((0xFFFF_FFF0, 1234)));
     }
 }
