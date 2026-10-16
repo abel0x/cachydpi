@@ -275,7 +275,7 @@ Domain-list file paths are restricted to `/etc/cachydpi/` and `/usr/share/cachyd
 
 ## Release verification (SSH-signed)
 
-CachyDPI's git commits and release tags are signed with the maintainer's **SSH** signing key, not GPG. To verify, add the maintainer's public key to an allowed-signers file and check the signature:
+CachyDPI's git commits and release tags are signed with the maintainer's **SSH** signing key, not GPG, from v1.1.0 on: the v1.0.0 tag and the two commits before it are unsigned. To verify, add the maintainer's public key to an allowed-signers file and check the signature:
 
 ```bash
 # 1. Save the maintainer's published SSH signing public key, mapped to their commit email:
