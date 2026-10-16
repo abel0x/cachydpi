@@ -21,8 +21,8 @@ makedepends=(
 )
 install="$pkgname.install"
 backup=('etc/cachydpi/config.toml' 'etc/cachydpi/blacklist.txt')
-source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('SKIP')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('9b4038e2f35e5f3b209184fa10c27ecf6dcfa5db3f6ed220716250c2a295f160')
 
 prepare() {
     cd "$srcdir/$pkgname-$pkgver"
@@ -35,8 +35,10 @@ build() {
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
 
-    # Use CachyOS-optimized build flags
-    export RUSTFLAGS="-C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
+    # Optimisation (opt-level 3, fat LTO, one codegen unit, stripped) comes
+    # from [profile.release] in Cargo.toml. Passing -C lto through RUSTFLAGS
+    # instead breaks the build: it also reaches build scripts and proc macros,
+    # which cargo compiles with -C embed-bitcode=no.
 
     cargo build --frozen --release
 }
