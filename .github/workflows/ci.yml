@@ -13,7 +13,7 @@ env:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +49,18 @@ jobs:
       # this job pass without ever running them, so here the namespace is
       # provided and CACHYDPI_REQUIRE_NETNS_TESTS turns any remaining skip
       # into a failure.
+      # Ubuntu 24.04 lets an unprivileged user create a user namespace, but
+      # AppArmor then strips its capabilities, so nft and raw sockets fail
+      # inside it. The privilege-drop tests setuid to the daemon's user, which
+      # --map-auto can only map into the namespace from a subordinate id range.
+      - name: Prepare the namespace tests
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin cachydpi
+          for f in /etc/subuid /etc/subgid; do
+            grep -q "^$(id -un):" "$f" || echo "$(id -un):100000:65536" | sudo tee -a "$f"
+          done
+
       - name: Namespace-dependent tests (nftables, raw socket, privilege drop)
         env:
           CACHYDPI_REQUIRE_NETNS_TESTS: "1"
@@ -56,7 +68,7 @@ jobs:
 
   audit:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -65,7 +77,7 @@ jobs:
 
   performance:
     name: Performance Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     steps:
       - uses: actions/checkout@v4
