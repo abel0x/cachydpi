@@ -26,7 +26,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   answer only in the first 4 reply packets, which the server's ACKs for a
   split ClientHello could fill. A teardown RST then counted as a block.
 
-## [1.8.0] — 2026-10-15
+## [1.8.0] — 2026-x-x
 
 ### Added
 
@@ -45,7 +45,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   daemon, and `make uninstall` removes it. Before, the monitor was never
   updated, which is how an old one ended up reading a newer daemon.
 
-## [1.7.0] — 2026-10-15
+## [1.7.0] — 2026-x-x
 
 ### Changed
 
@@ -60,7 +60,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   output includes the DNS state, and it notes when the service is running.
 - The never-filled DPI TTL field and the ISP guess are removed.
 
-## [1.6.0] — 2026-10-15
+## [1.6.0] — 2026-x-x
 
 ### Changed
 
@@ -77,7 +77,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   that happened only with passive defence on, and always fell back to an
   estimate.
 
-## [1.5.1] — 2026-10-15
+## [1.5.1] — 2026-x-x
 
 ### Fixed
 
@@ -85,7 +85,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   its retransmission went out unsplit, showing the DPI the whole name. It is
   now split again.
 
-## [1.5.0] — 2026-10-15
+## [1.5.0] — 2026-x-x
 
 ### Added
 
@@ -105,7 +105,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - The startup warning that mode 7 is not implemented.
 
-## [1.4.0] — 2026-10-15
+## [1.4.0] — 2026-x-x
 
 ### Added
 
@@ -119,7 +119,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - The daemon warns at startup when DNS is not encrypted, and `cachydpi status`
   shows the DNS state.
 
-## [1.3.1] — 2026-10-15
+## [1.3.1] — 2026-x-x
 
 ### Fixed
 
@@ -129,7 +129,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   spelling is refused only where it would change behaviour — `mode =
   "whitelist"`, `whitelist_file`, or a `whitelist` list with entries.
 
-## [1.3.0] — 2026-10-15
+## [1.3.0] — 2026-x-x
 
 The daemon now handles only the packets it can act on, and passive defence
 stops mistaking a server's own error responses for injected ones.
@@ -159,7 +159,7 @@ stops mistaking a server's own error responses for injected ones.
   caught, and a real redirect whose URL contains a word like "restricted" is
   no longer dropped.
 
-## [1.2.0] — 2026-10-15
+## [1.2.0] — 2026-x-x
 
 Bypass now reaches the browsers that most need it, and the `whitelist`
 spelling deprecated in 1.1.0 is gone.
@@ -184,7 +184,7 @@ spelling deprecated in 1.1.0 is gone.
   already gone out. The state kept between segments is a fixed table of hashed
   tags and sequence numbers, with no addresses.
 
-## [1.1.1] — 2026-10-15
+## [1.1.1] — 2026-x-x
 
 A corrective release. Mode 6 was breaking the TLS connections it touched, and
 passive defence — on in the default mode — was dropping servers' own resets.
