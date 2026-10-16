@@ -416,7 +416,10 @@ mod tests {
             .expect("nft must accept the QUIC and mode 7 rules");
         let dump = ruleset_dump();
         assert!(dump.contains("udp dport 443"), "{dump}");
-        assert!(dump.contains("ct reply packets <= 4"), "{dump}");
+        assert!(
+            dump.contains(&format!("ct reply packets <= {ANSWER_PACKETS}")),
+            "{dump}"
+        );
         rules.remove().unwrap();
     }
 
