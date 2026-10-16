@@ -69,9 +69,11 @@ install:
 	$(INSTALL) -Dm644 config/config.toml $(DESTDIR)$(PREFIX)/share/doc/cachydpi/config.toml
 	$(INSTALL) -Dm644 CHANGELOG.md $(DESTDIR)$(PREFIX)/share/doc/cachydpi/CHANGELOG.md
 	$(INSTALL) -Dm644 README.md $(DESTDIR)$(PREFIX)/share/doc/cachydpi/README.md
-	$(INSTALL) -Dm644 systemd/cachydpi.service $(DESTDIR)$(PREFIX)/lib/systemd/system/cachydpi.service
-	$(INSTALL) -Dm644 systemd/cachydpi.sysusers $(DESTDIR)$(PREFIX)/lib/sysusers.d/cachydpi.conf
-	$(INSTALL) -Dm644 systemd/cachydpi.tmpfiles $(DESTDIR)$(PREFIX)/lib/tmpfiles.d/cachydpi.conf
+	@# -C leaves an unchanged file untouched: rewriting it bumps the mtime and
+	@# systemd then asks for a daemon-reload although nothing changed.
+	$(INSTALL) -C -Dm644 systemd/cachydpi.service $(DESTDIR)$(PREFIX)/lib/systemd/system/cachydpi.service
+	$(INSTALL) -C -Dm644 systemd/cachydpi.sysusers $(DESTDIR)$(PREFIX)/lib/sysusers.d/cachydpi.conf
+	$(INSTALL) -C -Dm644 systemd/cachydpi.tmpfiles $(DESTDIR)$(PREFIX)/lib/tmpfiles.d/cachydpi.conf
 	@echo ""
 	@echo "CachyDPI installed. Enable with: sudo systemctl enable --now cachydpi"
 
