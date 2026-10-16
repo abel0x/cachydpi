@@ -209,7 +209,7 @@ Dependencies are a small set of widely used crates (`clap`, `serde`/`toml`, `ser
 
 ## Verifying release authenticity (SSH-signed)
 
-CachyDPI's git commits and release tags are signed with the maintainer's **SSH** signing key — the project does **not** use GPG. Signing starts with v1.1.0: the v1.0.0 tag and the two commits before it are unsigned. Verify with git's SSH-signature support:
+CachyDPI's git commits and release tags are signed with the maintainer's **SSH** signing key — the project does **not** use GPG. Every release tag is signed; only the first two commits, from before v1.0.0 was tagged, are not. Verify with git's SSH-signature support:
 
 ```bash
 # Add the maintainer's published SSH signing key, mapped to their commit email:
