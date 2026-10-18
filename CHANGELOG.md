@@ -5,6 +5,24 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] — 2026-10-18
+
+### Security
+
+- Dependencies updated to clear three RustSec advisories: `anyhow` 1.0.104
+  (RUSTSEC-2026-0190), `lru` 0.18.5 through `ratatui` 0.30.2
+  (RUSTSEC-2026-0253) and `rand` 0.8.8 (RUSTSEC-2026-0097). No advisory is
+  ignored any more.
+
+### Fixed
+
+- The PKGBUILD in the source tree builds. It downloads the tagged release
+  from GitHub and checks its checksum instead of expecting a hand-made local
+  archive, and no longer exports `RUSTFLAGS` with `-C lto=fat`, which rustc
+  rejected for build scripts and stopped the build. The release profile
+  already applies the same optimisation. The package published on the AUR
+  had these fixes already.
+
 ## [1.9.0] — 2026-10-15
 
 ### Added

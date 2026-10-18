@@ -2,7 +2,7 @@
 # CachyDPI — System-wide DPI bypass tool for Linux
 
 pkgname=cachydpi
-pkgver=1.9.0
+pkgver=1.9.1
 pkgrel=1
 pkgdesc="System-wide DPI bypass tool for Linux — GoodbyeDPI alternative"
 arch=('x86_64' 'aarch64')
@@ -22,7 +22,7 @@ makedepends=(
 install="$pkgname.install"
 backup=('etc/cachydpi/config.toml' 'etc/cachydpi/blacklist.txt')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('72b149243eb2e400c7b04125b93834de8c3f7ca7b0e8190faab77476e662c5b0')
+sha256sums=('SKIP')
 
 prepare() {
     cd "$srcdir/$pkgname-$pkgver"

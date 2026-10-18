@@ -1,6 +1,6 @@
 [package]
 name = "cachydpi"
-version = "1.9.0"
+version = "1.9.1"
 edition = "2024"
 autobins = false
 authors = ["abel0x <https://github.com/abel0x>"]
