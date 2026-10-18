@@ -17,3 +17,6 @@ Thumbs.db
 *.pcap
 tests/reports/*.txt
 /cachydpi/
+
+# Local scratch files
+/allofus.md
