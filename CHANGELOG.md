@@ -13,6 +13,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   stop timeout: it sends SIGKILL if the daemon has not exited after 5 s, then
   removes the nftables table a killed daemon leaves behind. Needs root.
 
+### Fixed
+
+- A server's own RST could be dropped as forged, leaving an upload or other
+  long connection hanging instead of failing. When the daemon had no record of
+  a connection (it was opened before the daemon started, or its record had
+  been overwritten), the RST was judged by its shape, and a Linux server's
+  normal RST looks exactly like a forged one. Such RSTs now pass, and only the
+  first 16 reply packets of a connection are checked for forged RSTs at all.
+
 ## [1.9.1] — 2026-10-18
 
 ### Security

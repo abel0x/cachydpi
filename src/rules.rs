@@ -33,8 +33,8 @@ pub struct NftRules {
 /// and spans at most three segments; the margin covers retransmissions.
 /// Everything after this goes straight through the kernel.
 const OUTBOUND_PACKETS: u32 = 10;
-/// Reply packets in which an injected TLS alert can arrive. A DPI box answers
-/// the ClientHello at once, ahead of the server's own first flight.
+/// Reply packets in which an injected RST or TLS alert can arrive. A DPI box
+/// answers the ClientHello at once, ahead of the server's own first flight.
 const INBOUND_PACKETS: u32 = 16;
 /// An injected HTTP redirect is a short response; a download is full-size
 /// segments, and none of those need to leave the kernel.
@@ -128,8 +128,10 @@ table {family} {table} {{
     chain input {{
         type filter hook input priority 0; policy accept;
 
-        # RSTs, judged against the server's hop count
-        tcp sport {{ 80, 443, 8080 }} tcp flags & rst == rst queue num {queue_in} bypass
+        # RSTs early in a connection, judged against the server's hop count.
+        # A DPI resets a connection when the name goes out; a later RST is
+        # the server's own, and queueing it only risked a misjudgement.
+        tcp sport {{ 80, 443, 8080 }} tcp flags & rst == rst ct reply packets <= {in_pkts} queue num {queue_in} bypass
 
         # SYN-ACKs: the server's hop count, and auto-TTL
         tcp sport {{ 80, 443, 8080 }} tcp flags & (syn|ack) == syn|ack queue num {queue_in} bypass
@@ -350,6 +352,9 @@ mod tests {
             line_with(&script, "tcp sport 443 tcp flags & (psh|ack)")
                 .contains("ct reply packets <= 16")
         );
+        // RSTs were queued for the whole life of a connection, and a long
+        // upload's real reset could be judged forged and dropped.
+        assert!(line_with(&script, "tcp flags & rst == rst").contains("ct reply packets <= 16"));
         assert!(
             line_with(&script, "tcp sport 80 tcp flags & (psh|ack)")
                 .contains("meta length <= 1000")

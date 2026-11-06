@@ -3,7 +3,7 @@
 // src/strategies/passive.rs — Passive DPI detection and blocking
 //
 // Detects and drops forged packets injected by DPI systems:
-// - TCP RST packets with suspicious characteristics
+// - TCP RST packets from closer than the connection's server
 // - HTTP 302/301 redirects that arrive too fast
 // - ICMP unreachable messages
 
@@ -36,11 +36,14 @@ pub fn injected_by_hop_count(packet: &ParsedPacket<'_>, flow: FlowTtl) -> Option
 
 /// Whether an RST was injected rather than sent by the server.
 ///
-/// The shape of an RST cannot decide this — a Linux server's own RST has
-/// window 0 and no options — so the shape score is only the fallback for a
-/// connection with no record.
+/// Only the hop count can decide this. The shape of an RST cannot: a Linux
+/// server's own RST has window 0 and no options, exactly what a forged one
+/// looks like. A connection with no record — opened before the daemon started,
+/// or whose slot a later flow has taken — therefore keeps its RSTs. Dropping
+/// them by shape swallowed servers' real resets, and a long upload then hung
+/// instead of failing.
 pub fn is_forged_rst_on_flow(packet: &ParsedPacket<'_>, flow: FlowTtl) -> bool {
-    injected_by_hop_count(packet, flow).unwrap_or_else(|| is_forged_rst(packet))
+    injected_by_hop_count(packet, flow).unwrap_or(false)
 }
 
 /// Whether a fatal TLS alert was injected rather than sent by the server.
@@ -69,76 +72,6 @@ pub fn is_forged_redirect_on_flow(
     http::is_http_redirect(payload)
         && injected_by_hop_count(packet, flow)
             .unwrap_or_else(|| is_forged_redirect(payload, packet))
-}
-
-/// Check if a TCP RST packet looks forged by DPI.
-///
-/// Forged RSTs typically have these characteristics:
-/// - TTL significantly different from established connection
-/// - Window size is 0
-/// - No TCP options
-/// - Often arrive very quickly after the request
-pub fn is_forged_rst(packet: &ParsedPacket<'_>) -> bool {
-    let tcp = match packet.tcp() {
-        Some(t) => t,
-        None => return false,
-    };
-
-    if !tcp.is_rst() {
-        return false;
-    }
-
-    let mut score: u32 = 0;
-
-    // Indicator 1: RST with window size 0 (very common for DPI-forged RSTs)
-    if tcp.window_size == 0 {
-        score += 2;
-    }
-
-    // Indicator 2: No TCP options (most real RSTs have timestamps)
-    if tcp.options.is_empty() {
-        score += 1;
-    }
-
-    // Indicator 3: Suspicious TTL values
-    // DPI boxes often use a fixed TTL like 64 or 128, OR a TTL that doesn't
-    // match the expected server TTL. Real server RSTs have TTL consistent
-    // with previous packets from the same server.
-    let ttl = packet.ttl();
-    if ttl == 64 || ttl == 128 {
-        score += 1;
-    }
-    // TTL that's significantly higher than typical server response indicates
-    // a closer device (DPI) sent it. Servers at 20 hops give TTL ~44,
-    // DPI at 8-10 hops gives TTL ~54-56 or ~118.
-    if ttl > 100 && ttl < 128 {
-        // TTL in range 101-127: likely initial_ttl=128 with only a few hops
-        // (DPI appliance closer than the real server)
-        score += 1;
-    }
-
-    // Indicator 4: RST+ACK (some DPI systems send RST with ACK set)
-    if tcp.flags & (super::super::packet::tcp::TCP_RST | super::super::packet::tcp::TCP_ACK)
-        == (super::super::packet::tcp::TCP_RST | super::super::packet::tcp::TCP_ACK)
-    {
-        score += 1;
-    }
-
-    // Threshold: lowered to 3 — the combination of window=0 + no options + any
-    // TTL anomaly or RST+ACK is sufficient. Score 4 was too strict: observed
-    // DPI RSTs with TTL=118 (not 128) were only caught when all 4 other
-    // indicators fired.
-    let forged = score >= 3;
-    if forged {
-        trace!(
-            ttl = ttl,
-            window = tcp.window_size,
-            score = score,
-            "RST packet scored as forged"
-        );
-    }
-
-    forged
 }
 
 /// Check if an HTTP response looks like a forged DPI redirect.

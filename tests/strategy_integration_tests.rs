@@ -879,17 +879,26 @@ mod evaluate_outbound_misc {
 mod evaluate_inbound {
     use super::*;
 
+    /// The regression: with no record of the connection — opened before the
+    /// daemon started, or its slot since reused — the RST was judged by shape,
+    /// and a Linux server's own RST (window 0, no options) scored as forged.
+    /// The server's reset never reached the browser, and an upload hung.
     #[test]
-    fn forged_rst_is_dropped() {
-        // Classic DPI-forged RST: window=0, no options, TTL=64, RST+ACK
-        let pkt = build_rst_packet(0, 64, tcp::TCP_RST | tcp::TCP_ACK, &[]);
+    fn rst_on_a_flow_with_no_record_is_accepted() {
         let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
-        let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
-        let action = engine.evaluate_inbound(&parsed);
-        assert!(
-            matches!(action, PacketAction::Drop),
-            "Forged RST should be dropped: {action:?}"
-        );
+        for (ttl, flags) in [
+            (64, tcp::TCP_RST),
+            (64, tcp::TCP_RST | tcp::TCP_ACK),
+            (118, tcp::TCP_RST | tcp::TCP_ACK),
+        ] {
+            let pkt = build_rst_packet(0, ttl, flags, &[]);
+            let parsed = ParsedPacket::parse(&pkt, Direction::Inbound).unwrap();
+            let action = engine.evaluate_inbound(&parsed);
+            assert!(
+                matches!(action, PacketAction::Accept),
+                "RST on an unrecorded flow must reach the kernel (ttl {ttl}): {action:?}"
+            );
+        }
     }
 
     #[test]
