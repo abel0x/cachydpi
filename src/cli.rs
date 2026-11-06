@@ -140,6 +140,9 @@ pub enum Commands {
     },
     /// Restart the CachyDPI systemd service
     Restart,
+    /// Stop the CachyDPI service, killing it if it does not exit, and remove
+    /// any nftables rules it left behind (needs root)
+    ForceStop,
     /// Interactively configure the domain filter mode (list / all)
     Settings,
     /// Encrypted DNS: sites blocked by DNS need it, whatever the bypass mode
@@ -236,6 +239,12 @@ mod tests {
             desc.contains("Adaptive") && desc.contains("escalating"),
             "mode 7 description must say it escalates, got: {desc:?}"
         );
+    }
+
+    #[test]
+    fn force_stop_parses() {
+        let cli = parse(&["force-stop"]);
+        assert!(matches!(cli.command, Some(Commands::ForceStop)));
     }
 
     #[test]

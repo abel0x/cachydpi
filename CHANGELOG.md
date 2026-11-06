@@ -5,6 +5,14 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `cachydpi force-stop` stops the service without waiting out systemd's 90 s
+  stop timeout: it sends SIGKILL if the daemon has not exited after 5 s, then
+  removes the nftables table a killed daemon leaves behind. Needs root.
+
 ## [1.9.1] — 2026-10-18
 
 ### Security

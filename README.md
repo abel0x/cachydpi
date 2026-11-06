@@ -104,6 +104,7 @@ sudo systemctl enable --now cachydpi   # start at boot and now
 sudo systemctl status cachydpi
 journalctl -u cachydpi -f              # follow logs
 sudo cachydpi restart                  # restart via systemctl
+sudo cachydpi force-stop               # stop now, kill if hung, clean up rules
 ```
 
 The unit runs `cachydpi --foreground` as `User=cachydpi` with `NoNewPrivileges` and `AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW`. See [SECURITY.md](SECURITY.md) for the full hardening set.
@@ -141,6 +142,7 @@ The TUI connects to the daemon's Unix socket (`/run/cachydpi/metrics.sock`, fall
 | `detect <domain>` | Probe the target (default `www.youtube.com`) to fingerprint the ISP's DPI; **makes real network connections** |
 | `dns status` / `dns enable` / `dns disable` | Check or turn on encrypted DNS (see [DNS security](#dns-security)) |
 | `restart` | `systemctl restart cachydpi` |
+| `force-stop` | Stop the service, SIGKILL it if it has not exited after 5 s, then remove its nftables rules (root) |
 | `install-rules` / `remove-rules` | Manually add/remove the nftables table |
 
 #### Domain filter settings

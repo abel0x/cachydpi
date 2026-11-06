@@ -468,6 +468,7 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
             }
             Ok(())
         }
+        Commands::ForceStop => force_stop(config),
         Commands::Settings => settings::run_settings(config, config_path),
         Commands::Dns { action } => run_dns(action),
         Commands::Shelby => {
@@ -479,6 +480,88 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
             Ok(())
         }
     }
+}
+
+/// How long `force-stop` waits for a graceful exit before sending SIGKILL.
+const FORCE_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether the service has fully exited. `systemctl is-active` is not enough:
+/// it already reports a unit stuck in `deactivating` as not active, which is
+/// exactly the hung daemon `force-stop` exists to kill. Only `inactive` and
+/// `failed` mean the processes are gone; anything else, including a failed
+/// query, counts as still running.
+fn service_exited() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["show", "--property=ActiveState", "--value", "cachydpi"])
+        .output()
+        .is_ok_and(|out| {
+            out.status.success()
+                && matches!(
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    "inactive" | "failed"
+                )
+        })
+}
+
+/// Wait up to `limit` for the service to exit.
+fn wait_for_service_exit(limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if service_exited() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    service_exited()
+}
+
+/// Stop the service without waiting out its 90 s stop timeout, then remove
+/// the nftables table in case the daemon died without cleaning it up.
+fn force_stop(config: &Config) -> Result<()> {
+    if !nix::unistd::geteuid().is_root() {
+        anyhow::bail!(
+            "stopping the service and removing its nftables rules needs root — run it with sudo"
+        );
+    }
+
+    // --no-block queues the stop job and returns, so the grace period is ours
+    // to choose. The queued job also keeps Restart=on-failure from bringing
+    // the daemon back after a SIGKILL.
+    let status = std::process::Command::new("systemctl")
+        .args(["stop", "--no-block", "cachydpi"])
+        .status()
+        .context("failed to run systemctl — is systemd available?")?;
+    if !status.success() {
+        anyhow::bail!("systemctl stop failed (exit code: {:?})", status.code());
+    }
+
+    println!("Stopping CachyDPI service...");
+    if !wait_for_service_exit(FORCE_STOP_GRACE) {
+        println!(
+            "Still running after {}s, sending SIGKILL",
+            FORCE_STOP_GRACE.as_secs()
+        );
+        let status = std::process::Command::new("systemctl")
+            .args(["kill", "--signal=SIGKILL", "cachydpi"])
+            .status()
+            .context("failed to run systemctl kill")?;
+        if !status.success() {
+            anyhow::bail!("systemctl kill failed (exit code: {:?})", status.code());
+        }
+        if !wait_for_service_exit(FORCE_STOP_GRACE) {
+            anyhow::bail!("the CachyDPI service is still running after SIGKILL");
+        }
+    }
+    println!("CachyDPI service stopped");
+
+    // A killed daemon never runs its teardown. The rules' `bypass` flag lets
+    // traffic through while nobody reads the queue, but the stale table would
+    // still be there for the next start to trip over. Removing it is harmless
+    // when the daemon already did.
+    NftRules::new(config.general.queue_num, config.general.ipv6).remove()?;
+    println!("nftables rules removed");
+    println!("The service still starts at boot if enabled (sudo systemctl disable cachydpi)");
+    Ok(())
 }
 
 fn print_dns_status(status: &cachydpi::dns::DnsStatus) {
