@@ -20,3 +20,6 @@ tests/reports/*.txt
 
 # Local scratch files
 /allofus.md
+
+# Local security review notes (not for publication)
+/reports/
