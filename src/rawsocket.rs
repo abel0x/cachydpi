@@ -42,7 +42,11 @@ impl RateLimiter {
 
     /// Returns true if another packet fits in the current 1-second window.
     fn allow(&self) -> bool {
-        let mut start = self.window_start.lock().unwrap();
+        // A poisoned lock still holds a valid Instant; carry on with it.
+        let mut start = self
+            .window_start
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
         if now.duration_since(*start).as_secs() >= 1 {
             // New window
