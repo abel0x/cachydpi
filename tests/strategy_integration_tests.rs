@@ -1604,6 +1604,64 @@ mod window_size_tests {
             );
         }
     }
+
+    /// The window lives in the TCP header, so the TCP checksum has to be
+    /// refreshed too. The kernel hands the queue a finished checksum and sends
+    /// a modified packet back out as it is, so a stale one would make the
+    /// server drop every SYN.
+    #[test]
+    fn window_modification_refreshes_the_tcp_checksum() {
+        let engine = StrategyEngine::new(BypassMode::AllActive, config_with_window(100));
+        let pkt = build_syn_packet(443);
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+
+        let PacketAction::Modify(modified) = engine.evaluate_outbound(&parsed) else {
+            panic!("Expected Modify action for SYN with window config");
+        };
+        assert_tcp_checksum_holds(&modified);
+    }
+
+    #[test]
+    fn window_modification_refreshes_the_tcp_checksum_on_ipv6() {
+        let src = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let dst = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+        let mut seg = tcp::build_tcp_header(12345, 443, 1000, 0, tcp::TCP_SYN, 65535, &[]);
+        let cksum = tcp::tcp_checksum_v6(&src, &dst, &seg);
+        tcp::set_tcp_checksum(&mut seg, cksum);
+        let mut pkt = vec![0x60, 0, 0, 0];
+        pkt.extend_from_slice(&(seg.len() as u16).to_be_bytes());
+        pkt.extend_from_slice(&[ip::PROTO_TCP, 64]);
+        pkt.extend_from_slice(&src);
+        pkt.extend_from_slice(&dst);
+        pkt.extend_from_slice(&seg);
+
+        tcp::modify_window_size(&mut pkt, 40, 100);
+
+        assert_eq!(u16::from_be_bytes([pkt[54], pkt[55]]), 100);
+        assert_tcp_checksum_holds(&pkt);
+    }
+
+    /// Recompute the checksum from scratch and compare it with the stored one.
+    fn assert_tcp_checksum_holds(packet: &[u8]) {
+        let parsed = ParsedPacket::parse(packet, Direction::Outbound).unwrap();
+        let off = parsed.ip.header_len();
+        let stored = u16::from_be_bytes([packet[off + 16], packet[off + 17]]);
+        let mut seg = packet[off..].to_vec();
+        seg[16..18].fill(0);
+        let expected = if parsed.ip.is_v4() {
+            let src: [u8; 4] = packet[12..16].try_into().unwrap();
+            let dst: [u8; 4] = packet[16..20].try_into().unwrap();
+            tcp::tcp_checksum_v4(&src, &dst, &seg)
+        } else {
+            let src: [u8; 16] = packet[8..24].try_into().unwrap();
+            let dst: [u8; 16] = packet[24..40].try_into().unwrap();
+            tcp::tcp_checksum_v6(&src, &dst, &seg)
+        };
+        assert_eq!(
+            stored, expected,
+            "TCP checksum must match the modified segment"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

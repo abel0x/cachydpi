@@ -5,6 +5,14 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `tcp_window_size` (`--window-size`) broke every connection it touched: the
+  window was rewritten but the TCP checksum was not, so the server dropped
+  each modified SYN. The checksum is now refreshed, for IPv4 and IPv6.
+
 ## [1.10.0] — 2026-11-06
 
 ### Added

@@ -889,13 +889,9 @@ impl StrategyEngine {
         let mut modified = packet.raw.to_vec();
         let ip_hdr_len = packet.ip.header_len();
         let new_window = self.config.strategies.tcp_window_size;
+        // Only the TCP header changes; modify_window_size refreshes its
+        // checksum, and the IP header and its checksum stay valid as they are.
         packet::tcp::modify_window_size(&mut modified, ip_hdr_len, new_window);
-
-        // Recalculate IP checksum if IPv4
-        if packet.ip.is_v4() {
-            let ttl = modified[8];
-            packet::ip::set_ipv4_ttl(&mut modified, ttl);
-        }
 
         PacketAction::Modify(modified)
     }

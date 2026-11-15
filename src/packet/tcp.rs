@@ -226,11 +226,47 @@ pub fn set_tcp_checksum(segment: &mut [u8], checksum: u16) {
     }
 }
 
-/// Modify the window size in a raw packet (IP + TCP)
+/// Modify the window size in a raw packet (IP + TCP) and refresh the TCP
+/// checksum to match.
+///
+/// The checksum cannot be left to the kernel. The queue does not ask for GSO
+/// packets, so the kernel completes the checksum before handing the packet
+/// over, and a packet given back modified goes out as it is: a stale checksum
+/// would make the server drop every SYN.
 pub fn modify_window_size(packet: &mut [u8], ip_header_len: usize, new_window: u16) {
     let tcp_offset = ip_header_len;
-    if packet.len() < tcp_offset + 16 {
+    if packet.len() < tcp_offset + 18 {
         return;
     }
     packet[tcp_offset + 14..tcp_offset + 16].copy_from_slice(&new_window.to_be_bytes());
+    refresh_tcp_checksum(packet, ip_header_len);
+}
+
+/// Recompute the TCP checksum of a whole IPv4 or IPv6 packet in place.
+///
+/// Leaves the packet untouched when it is too short to hold the addresses and
+/// the checksum field, or its IP version is neither 4 nor 6.
+pub fn refresh_tcp_checksum(packet: &mut [u8], ip_header_len: usize) {
+    let tcp_offset = ip_header_len;
+    if packet.len() < tcp_offset + 18 {
+        return;
+    }
+    let checksum = match packet[0] >> 4 {
+        4 if tcp_offset >= 20 => {
+            let (Ok(src), Ok(dst)) = (packet[12..16].try_into(), packet[16..20].try_into()) else {
+                return;
+            };
+            packet[tcp_offset + 16..tcp_offset + 18].fill(0);
+            tcp_checksum_v4(&src, &dst, &packet[tcp_offset..])
+        }
+        6 if tcp_offset >= 40 => {
+            let (Ok(src), Ok(dst)) = (packet[8..24].try_into(), packet[24..40].try_into()) else {
+                return;
+            };
+            packet[tcp_offset + 16..tcp_offset + 18].fill(0);
+            tcp_checksum_v6(&src, &dst, &packet[tcp_offset..])
+        }
+        _ => return,
+    };
+    packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&checksum.to_be_bytes());
 }
