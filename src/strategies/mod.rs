@@ -1248,7 +1248,8 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
             queue.verdict_accept_modified(packet_id, &data)?;
             METRICS.out_modified.fetch_add(1, Ordering::Relaxed);
         }
-        PacketAction::Fragment(fragments) => {
+        PacketAction::Fragment(mut fragments) => {
+            packet::ip::number_tcp_burst(&mut fragments);
             // Deliver replacement fragments BEFORE issuing a verdict: the
             // original packet is held by the kernel until we answer, so if
             // injection fails we can still fall back to accepting it instead
@@ -1276,7 +1277,13 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
             queue.verdict_accept(packet_id)?;
             METRICS.out_accepted.fetch_add(1, Ordering::Relaxed);
         }
-        PacketAction::InjectAndFragment { fakes, fragments } => {
+        PacketAction::InjectAndFragment {
+            mut fakes,
+            mut fragments,
+        } => {
+            // Number the whole burst in the order it goes out, decoys first,
+            // so no two packets on the wire share an IP ID.
+            packet::ip::number_tcp_burst(fakes.iter_mut().chain(fragments.iter_mut()));
             // Send fakes first, then fragments, then drop the original.
             //
             // For desync: send ALL fakes before any fragment. This ensures

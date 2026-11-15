@@ -74,6 +74,8 @@ struct MockInjector {
     data_sends: std::sync::atomic::AtomicUsize,
     /// Simulate failure for decoy sends.
     fail_decoy: bool,
+    /// Every packet handed over, decoys and data alike, in send order.
+    wire: Mutex<Vec<Vec<u8>>>,
 }
 
 impl PacketInjector for MockInjector {
@@ -90,6 +92,7 @@ impl PacketInjector for MockInjector {
             }
         }
         self.log.lock().unwrap().push(Event::DataSent(packet.len()));
+        self.wire.lock().unwrap().push(packet.to_vec());
         // The mock really did deliver the packet to its destination (the log),
         // so claiming delivery here is truthful.
         Ok(cachydpi::rawsocket::Sent::confirmed())
@@ -102,6 +105,7 @@ impl PacketInjector for MockInjector {
             .lock()
             .unwrap()
             .push(Event::DecoySent(packet.len()));
+        self.wire.lock().unwrap().push(packet.to_vec());
         Ok(())
     }
 }
@@ -115,6 +119,7 @@ fn harness(fail_data: bool, fail_decoy: bool) -> (Log, MockQueue, MockInjector) 
         fail_data_after: None,
         data_sends: std::sync::atomic::AtomicUsize::new(0),
         fail_decoy,
+        wire: Mutex::new(Vec::new()),
     };
     (log, queue, injector)
 }
@@ -492,4 +497,49 @@ fn non_matching_packet_is_plainly_accepted() {
         vec![Event::Accept(PACKET_ID)],
         "plain ACK must produce exactly one ACCEPT verdict"
     );
+}
+
+/// Every packet of a fragmenting burst starts as a copy of the original's
+/// header. Leaving its IP ID in place would put several segments of one flow
+/// on the wire under a single ID, which no real stack does. Each packet must
+/// get its own ID, rising in the order they go out, decoys included, with a
+/// header checksum that still holds.
+#[test]
+fn each_packet_of_a_burst_gets_its_own_rising_ip_id() {
+    for with_fakes in [false, true] {
+        let (_log, queue, injector) = harness(false, false);
+        let engine = make_engine(with_fakes);
+        let pkt = build_tls_client_hello_packet("www.blockedsite.com");
+
+        process_packet(
+            &engine,
+            &queue,
+            &injector,
+            PACKET_ID,
+            &pkt,
+            Direction::Outbound,
+        )
+        .unwrap();
+
+        let wire = injector.wire.lock().unwrap();
+        assert!(
+            wire.len() >= 2,
+            "expected a multi-packet burst (fakes: {with_fakes}), got {}",
+            wire.len()
+        );
+        for (i, sent) in wire.iter().enumerate() {
+            let id = u16::from_be_bytes([sent[4], sent[5]]);
+            assert_eq!(
+                id,
+                0x1234 + i as u16,
+                "packet {i} of the burst (fakes: {with_fakes})"
+            );
+            let ihl = (sent[0] & 0x0F) as usize * 4;
+            assert_eq!(
+                ip::ipv4_checksum(&sent[..ihl]),
+                0,
+                "IP header checksum of packet {i} (fakes: {with_fakes})"
+            );
+        }
+    }
 }

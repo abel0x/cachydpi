@@ -543,3 +543,77 @@ fn safe_path_rejects_outside_directories() {
     let _ = config.load_domain_lists();
     assert!(config.domain_set.is_empty());
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  IP ID numbering of injected bursts
+// ═══════════════════════════════════════════════════════════════════
+
+mod burst_ip_id {
+    use cachydpi::packet::ip;
+    use std::net::Ipv4Addr;
+
+    fn v4(protocol: u8, id: u16, frag: u16) -> Vec<u8> {
+        let mut p = ip::build_ipv4_header(
+            Ipv4Addr::new(10, 0, 0, 1),
+            Ipv4Addr::new(10, 0, 0, 2),
+            protocol,
+            64,
+            20,
+            id,
+        );
+        p[6..8].copy_from_slice(&frag.to_be_bytes());
+        p[10..12].fill(0);
+        let c = ip::ipv4_checksum(&p[..20]);
+        p[10..12].copy_from_slice(&c.to_be_bytes());
+        p.extend_from_slice(&[0u8; 20]);
+        p
+    }
+
+    fn id(p: &[u8]) -> u16 {
+        u16::from_be_bytes([p[4], p[5]])
+    }
+
+    #[test]
+    fn ids_rise_in_send_order_and_checksums_hold() {
+        let mut burst = vec![v4(ip::PROTO_TCP, 0xFFFE, 0x4000); 3];
+        ip::number_tcp_burst(&mut burst);
+        let ids: Vec<u16> = burst.iter().map(|p| id(p)).collect();
+        assert_eq!(ids, [0xFFFE, 0xFFFF, 0x0000]);
+        for p in &burst {
+            assert_eq!(ip::ipv4_checksum(&p[..20]), 0);
+        }
+    }
+
+    /// The kernel writes ID 0 on some don't-fragment packets; a run of zeros
+    /// is the faithful copy of that, so it stays.
+    #[test]
+    fn a_zero_id_is_left_alone() {
+        let mut burst = vec![v4(ip::PROTO_TCP, 0, 0x4000); 3];
+        let before = burst.clone();
+        ip::number_tcp_burst(&mut burst);
+        assert_eq!(burst, before);
+    }
+
+    /// IP fragments (the QUIC path) must keep the ID they share, or the
+    /// receiver cannot reassemble them.
+    #[test]
+    fn ip_fragments_and_non_tcp_keep_their_id() {
+        let mut burst = vec![
+            v4(ip::PROTO_TCP, 0x1234, 0x2000), // MF set
+            v4(ip::PROTO_TCP, 0x1234, 0x0003), // non-zero offset
+            v4(17, 0x1234, 0),                 // UDP
+        ];
+        let before = burst.clone();
+        ip::number_tcp_burst(&mut burst);
+        assert_eq!(burst, before);
+    }
+
+    #[test]
+    fn ipv6_and_short_packets_are_skipped() {
+        let mut v6 = vec![0u8; 60];
+        v6[0] = 0x60;
+        let mut burst = vec![v6.clone(), vec![0x45, 0, 0]];
+        ip::number_tcp_burst(&mut burst);
+        assert_eq!(burst, [v6, vec![0x45, 0, 0]]);
+    }
+}

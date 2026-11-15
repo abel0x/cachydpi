@@ -253,6 +253,53 @@ pub fn build_ipv4_header(
     header
 }
 
+/// Give a burst of injected TCP segments one IPv4 identification each,
+/// increasing in the order they go on the wire, as a Linux sender does.
+///
+/// Every packet of a burst starts as a copy of the intercepted packet's
+/// header, so without this they would all carry its ID: several segments of
+/// one flow in flight under a single non-zero ID is something no real stack
+/// produces, and a DPI can match it on any connection.
+///
+/// The numbering starts from the ID the first TCP segment already carries. An
+/// ID of zero is left alone, because that is what the kernel itself writes on
+/// some don't-fragment packets, and a run of zeros is the honest copy of it.
+/// Only unfragmented IPv4 TCP packets are renumbered: an IP fragment must keep
+/// the ID it shares with its siblings, or the receiver can never reassemble
+/// it, and IPv6 has no such field.
+pub fn number_tcp_burst<'a>(packets: impl IntoIterator<Item = &'a mut Vec<u8>>) {
+    let mut next: Option<u16> = None;
+    for packet in packets {
+        if packet.len() < IPV4_MIN_HEADER || packet[0] >> 4 != 4 || packet[9] != 6 {
+            continue;
+        }
+        let ihl = (packet[0] & 0x0F) as usize * 4;
+        if ihl < IPV4_MIN_HEADER || packet.len() < ihl {
+            continue;
+        }
+        // More-fragments flag or a non-zero fragment offset: an IP fragment.
+        if u16::from_be_bytes([packet[6], packet[7]]) & 0x3FFF != 0 {
+            continue;
+        }
+        let id = match next {
+            Some(id) => id,
+            None => {
+                let first = u16::from_be_bytes([packet[4], packet[5]]);
+                if first == 0 {
+                    return;
+                }
+                first
+            }
+        };
+        packet[4..6].copy_from_slice(&id.to_be_bytes());
+        packet[10] = 0;
+        packet[11] = 0;
+        let cksum = ipv4_checksum(&packet[..ihl]);
+        packet[10..12].copy_from_slice(&cksum.to_be_bytes());
+        next = Some(id.wrapping_add(1));
+    }
+}
+
 /// Set TTL in a raw IPv4 packet and recalculate checksum
 pub fn set_ipv4_ttl(packet: &mut [u8], new_ttl: u8) {
     if packet.len() < IPV4_MIN_HEADER {

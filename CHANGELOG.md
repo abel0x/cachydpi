@@ -14,6 +14,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   each modified SYN. The checksum is now refreshed, for IPv4 and IPv6.
 - The fake ClientHello carried the same 32-byte `random` every time, which a
   DPI could match on its own. It is now fresh for every hello.
+- The packets that replace a split ClientHello or HTTP request all carried the
+  original packet's IP ID, so several segments of one connection went out
+  under a single ID. Each now gets its own, rising in send order as a Linux
+  sender's would; fake packets sent ahead of them are numbered too. IP
+  fragments on the QUIC path keep their shared ID, which reassembly needs.
 
 ## [1.10.0] — 2026-11-06
 
