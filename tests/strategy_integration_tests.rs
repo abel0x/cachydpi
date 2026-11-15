@@ -1416,6 +1416,21 @@ mod fake_packet_tests {
     use super::*;
     use cachydpi::strategies::fake_packet;
 
+    /// A real client never repeats the ClientHello `random`, so a fixed one
+    /// would let a DPI match every fake by those 32 bytes alone.
+    #[test]
+    fn fake_client_hello_random_is_fresh_every_time() {
+        // record header (5) + handshake header (4) + client_version (2)
+        const RANDOM: std::ops::Range<usize> = 11..43;
+        let a = fake_packet::build_fake_client_hello_payload("www.google.com");
+        let b = fake_packet::build_fake_client_hello_payload("www.google.com");
+        assert_eq!(a.len(), b.len());
+        assert_ne!(a[RANDOM], b[RANDOM], "two hellos shared their random");
+        assert_eq!(a[..RANDOM.start], b[..RANDOM.start]);
+        assert_eq!(a[RANDOM.end..], b[RANDOM.end..]);
+        assert_ne!(a[RANDOM], [0u8; 32]);
+    }
+
     #[test]
     fn fake_packets_have_low_ttl() {
         let pkt = build_tls_packet("example.com", 64);

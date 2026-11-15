@@ -92,6 +92,34 @@ const FAKE_HTTP_PAYLOAD: &[u8] = b"GET / HTTP/1.1\r\nHost: www.google.com\r\n\r\
 /// DPI processes this and classifies the connection as going to an allowed domain.
 const FAKE_SNI_DOMAIN: &str = "www.google.com";
 
+/// The 32-byte `random` of a ClientHello, from the kernel's random source.
+///
+/// A fake goes out once per connection, so a syscall here costs nothing that
+/// matters. Should `getrandom` fail, the bytes come from the standard
+/// library's per-process random hash keys instead: still unpredictable from
+/// outside and different for every call, which is what the field must be.
+fn client_random() -> [u8; 32] {
+    let mut out = [0u8; 32];
+    // SAFETY: `out` is a valid, writable buffer of exactly `out.len()` bytes.
+    let filled = unsafe { libc::getrandom(out.as_mut_ptr().cast(), out.len(), 0) };
+    if usize::try_from(filled).is_ok_and(|n| n == out.len()) {
+        return out;
+    }
+
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
+    let keys = std::collections::hash_map::RandomState::new();
+    for (i, chunk) in out.chunks_mut(8).enumerate() {
+        let mut h = keys.build_hasher();
+        h.write_u64(call);
+        h.write_usize(i);
+        chunk.copy_from_slice(&h.finish().to_be_bytes());
+    }
+    out
+}
+
 /// Build a realistic TLS ClientHello payload with a given SNI domain.
 /// This is the key desync technique: DPI processes this fake ClientHello
 /// and enters the "allowed" state for this connection. The fake packet
@@ -142,12 +170,9 @@ pub fn build_fake_client_hello_payload(sni: &str) -> Vec<u8> {
     payload.push(0x03);
     payload.push(0x03); // version: TLS 1.2
 
-    // 32 bytes random (use non-zero deterministic values)
-    payload.extend_from_slice(&[
-        0x42, 0x13, 0x37, 0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x01, 0x02, 0x03, 0x04,
-        0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13,
-        0x14, 0x15,
-    ]);
+    // 32 bytes random, fresh for every hello. A real client never repeats
+    // this field, so a fixed value would let a DPI match every fake by it.
+    payload.extend_from_slice(&client_random());
 
     payload.push(0x00); // session_id_len = 0
 

@@ -12,6 +12,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - `tcp_window_size` (`--window-size`) broke every connection it touched: the
   window was rewritten but the TCP checksum was not, so the server dropped
   each modified SYN. The checksum is now refreshed, for IPv4 and IPv6.
+- The fake ClientHello carried the same 32-byte `random` every time, which a
+  DPI could match on its own. It is now fresh for every hello.
 
 ## [1.10.0] — 2026-11-06
 
