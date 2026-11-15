@@ -12,7 +12,6 @@ pub mod http_split;
 pub mod passive;
 pub mod quic;
 pub mod tls_split;
-pub mod window_size;
 
 use std::net::IpAddr;
 use std::sync::Mutex;

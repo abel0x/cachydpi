@@ -23,6 +23,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   "buffer overrun" warning, because the check looked for text the error
   message never contained. It now checks the error code.
 
+### Removed
+
+- The unused `strategies::window_size` module; the window strategy has always
+  run through `packet::tcp::modify_window_size`.
+
 ## [1.10.0] — 2026-11-06
 
 ### Added
