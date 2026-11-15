@@ -19,6 +19,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   under a single ID. Each now gets its own, rising in send order as a Linux
   sender's would; fake packets sent ahead of them are numbered too. IP
   fragments on the QUIC path keep their shared ID, which reassembly needs.
+- A full netfilter queue (ENOBUFS) was logged as an error instead of the
+  "buffer overrun" warning, because the check looked for text the error
+  message never contained. It now checks the error code.
 
 ## [1.10.0] — 2026-11-06
 

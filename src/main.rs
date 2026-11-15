@@ -326,8 +326,13 @@ fn run_queue_loop(
                 if SHUTDOWN.load(Ordering::Relaxed) {
                     break;
                 }
-                // ENOBUFS is normal under load — kernel drops packets from queue
-                let is_enobufs = e.to_string().contains("No buffer space");
+                // ENOBUFS is normal under load — kernel drops packets from queue.
+                // Matched on the errno, not the text: the error's Display is
+                // only its outermost context, which never names the cause.
+                let is_enobufs = e
+                    .chain()
+                    .filter_map(|c| c.downcast_ref::<std::io::Error>())
+                    .any(|io| io.raw_os_error() == Some(libc::ENOBUFS));
                 if is_enobufs {
                     METRICS.queue_errors.fetch_add(1, Ordering::Relaxed);
                     warn!(
