@@ -19,9 +19,15 @@ bash tests/run_all_tests.sh --skip-root
 
 | File | Tests | Description |
 |------|-------|-------------|
-| `unit_tests.rs` | 22 | TCP checksum, TLS/HTTP/QUIC parsing, domain filtering |
-| `comprehensive_tests.rs` | 115 | Config loading, strategy logic, edge cases, error handling |
-| `strategy_integration_tests.rs` | 64 | Multi-strategy interactions, fragment ordering, domain filtering |
+| `unit_tests.rs` | 33 | TCP checksum, TLS/HTTP/QUIC parsing, domain filtering, IP ID numbering |
+| `comprehensive_tests.rs` | 116 | Config loading, strategy logic, edge cases, error handling |
+| `strategy_integration_tests.rs` | 97 | Multi-strategy interactions, fragment ordering, domain filtering, checksums |
+| `injection_path_tests.rs` | 9 | Verdict and injection order: fragments sent before the original is dropped, fallback on send failure |
+| `deploy_preserves_config.rs` | 5 | `deploy.sh` keeps an existing config, run against a sandbox |
+| `logging_single_sink.rs` | 3 | Each message reaches the journal once under systemd |
+| `no_identifying_fields_leak.rs` | 3 | Identifying log fields always go through the redaction switch |
+
+The modules under `src/` carry another 93 unit tests of their own.
 
 ### System Tests (shell scripts, require root)
 
@@ -72,10 +78,6 @@ Historical reports and analysis documents are also kept here for reference:
 | `BLACKLIST_REPORT.md` | Full blacklist accessibility test results |
 | `REMOVED_SITES.md` | Domains removed from blacklist (dead/unreachable) |
 
-## Last Test Results
+## Fresh Results
 
-```
-Grand Total: 290 passed, 0 failed, 2 skipped
-```
-
-> Run `sudo bash tests/run_all_tests.sh` to generate fresh results for your system.
+Run `sudo bash tests/run_all_tests.sh` to generate results for your system.

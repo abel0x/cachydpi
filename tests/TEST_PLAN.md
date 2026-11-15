@@ -1,6 +1,5 @@
 # CachyDPI — Real-World Validation Test Plan
 
-**Evaluator Role:** Senior Network Test Engineer & Adversarial Systems Evaluator  
 **Target:** CachyDPI v1.0.0  
 **Date:** 2026-04-09  
 **Scope:** Complete behavioral validation under real and hostile conditions

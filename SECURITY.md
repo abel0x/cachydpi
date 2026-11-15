@@ -38,8 +38,8 @@ These targets are a best-effort policy for a single-maintainer project, not a co
 
 | Version | Security updates |
 |---------|------------------|
-| 1.0.x | ✅ |
-| < 1.0 | ❌ |
+| 1.10.x (latest) | Yes |
+| < 1.10 | No — fixes land only in the latest release; upgrade to get them |
 
 ---
 
@@ -217,7 +217,7 @@ echo '86494759+abel0x@users.noreply.github.com namespaces="git" ssh-ed25519 AAAA
   >> ~/.config/git/allowed_signers
 git config gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
 
-git verify-tag v1.9.0          # verify a signed release tag
+git verify-tag v1.10.1         # verify a signed release tag
 git log --show-signature -1    # verify the tip commit
 ```
 

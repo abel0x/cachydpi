@@ -3,7 +3,6 @@
 > **Note:** This analysis was performed on April 9, 2026. Some issues documented here (F-003, F-005) have been fixed in subsequent releases. Results and scores reflect the state of the code at the time of testing.
 
 **Date:** 2026-04-09  
-**Analyst:** Senior Network Engineer / Failure Analyst  
 **System:** CachyOS x86_64, Kernel 6.19.10s, enp6s0 Ethernet  
 **ISP:** SNI-based DPI with inline blocking (likely Sandvine/ProcERA class)  
 **DNS:** systemd-resolved, DNS-over-TLS → Cloudflare 1.1.1.1  

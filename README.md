@@ -241,6 +241,8 @@ exempt         = []
 level    = "info"   # error | warn | info | debug | trace
 journald = true
 # file   = "/var/log/cachydpi/cachydpi.log"
+# log_identifying_fields = false  # log domains and peer addresses (see SECURITY.md)
+# log_packet_bytes       = false  # log packet contents at trace
 ```
 
 ### Domain filtering modes
@@ -288,7 +290,7 @@ echo '86494759+abel0x@users.noreply.github.com namespaces="git" ssh-ed25519 AAAA
 git config gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
 
 # 3. Verify:
-git verify-tag v1.9.0          # a release tag
+git verify-tag v1.10.1         # a release tag
 git log --show-signature -1    # the tip commit
 ```
 
