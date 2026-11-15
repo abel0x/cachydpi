@@ -12,10 +12,10 @@
 | Metric | Value |
 |--------|-------|
 | **Total Domains Tested** | 4999 |
-| **✅ Accessible (2xx/3xx)** | 3534 (70%) |
-| **⏱️ Timeout (000)** | 795 |
-| **🚫 Blocked (403)** | 432 |
-| **⚠️ Server Error (4xx/5xx)** | 237 |
+| **Accessible (2xx/3xx)** | 3534 (70%) |
+| **Timeout (000)** | 795 |
+| **Blocked (403)** | 432 |
+| **Server Error (4xx/5xx)** | 237 |
 | **Total Failed** | 1464 |
 | **Success Rate** | **70%** |
 
@@ -25,7 +25,7 @@ Success: [█████████████████████░░�
 
 ---
 
-## ✅ Accessible Sites (3534)
+## Accessible Sites (3534)
 
 | Domain | HTTP Code | Latency |
 |--------|-----------|---------|
@@ -3566,7 +3566,7 @@ Success: [█████████████████████░░�
 
 ---
 
-## ⏱️ Timeout / Unreachable (795)
+## Timeout / Unreachable (795)
 
 These sites did not respond within 5s. Could be:
 - ISP DPI blocking (CachyDPI bypass not working)
@@ -4374,7 +4374,7 @@ These sites did not respond within 5s. Could be:
 
 ---
 
-## 🚫 Blocked / Forbidden (432)
+## Blocked / Forbidden (432)
 
 These sites returned HTTP 403. The request reached the server but access was denied
 (could be geo-blocking, server-side block, or DPI injection).
@@ -4816,7 +4816,7 @@ These sites returned HTTP 403. The request reached the server but access was den
 
 ---
 
-## ⚠️ Server Errors (237)
+## Server Errors (237)
 
 These sites returned 4xx/5xx errors. The connection was established but the server
 returned an error (not necessarily a DPI issue).

@@ -16,15 +16,15 @@
 
 | Site | ISP Blocked | OFF (CachyDPI Disabled) | ON (CachyDPI Enabled) | Status |
 |------|-------------|------------------------|------------------------|--------|
-| discord.com | ✅ Blocked (Cloudflare CDN) | 000 (RST) | 000 (Timeout) | ❌ FAILED |
-| pastebin.com | ✅ Blocked | 000 (RST) | 000 (Timeout) | ❌ FAILED |
-| **pornhub.com** | ✅ Blocked | 000 (RST) | **301** | ✅ **BYPASS WORKING** |
-| twinkaboo.com | ✅ Blocked | 000 (RST) | 000 (Timeout) | ❌ FAILED |
-| youtube.com | ❌ Not blocked | 301 | 301 | ✅ Normal traffic unaffected |
-| google.com | ❌ Not blocked | 301 | 301 | ✅ Normal traffic unaffected |
-| github.com | ❌ Not blocked | 200 | 200 | ✅ Normal traffic unaffected |
-| reddit.com | ❌ Not blocked | 301 | 301 | ✅ Normal traffic unaffected |
-| twitter.com | ❌ Not blocked | 301 | 301 | ✅ Normal traffic unaffected |
+| discord.com | Blocked (Cloudflare CDN) | 000 (RST) | 000 (Timeout) | FAILED |
+| pastebin.com | Blocked | 000 (RST) | 000 (Timeout) | FAILED |
+| **pornhub.com** | Blocked | 000 (RST) | **301** | **BYPASS WORKING** |
+| twinkaboo.com | Blocked | 000 (RST) | 000 (Timeout) | FAILED |
+| youtube.com | Not blocked | 301 | 301 | Normal traffic unaffected |
+| google.com | Not blocked | 301 | 301 | Normal traffic unaffected |
+| github.com | Not blocked | 200 | 200 | Normal traffic unaffected |
+| reddit.com | Not blocked | 301 | 301 | Normal traffic unaffected |
+| twitter.com | Not blocked | 301 | 301 | Normal traffic unaffected |
 
 **Bypass Success Rate (blocked sites):** 1/4 = **25%**
 
@@ -35,27 +35,27 @@
 | 1 (Passive) | Drop forged RST/302 only | 000 (TLS alert) | Not tested |
 | 3 (TLS Frag) | SNI fragmentation | 000 | Not tested |
 | 4 (Fake) | Fake packet only | 000 | Not tested |
-| 5 (AllActive) | All active techniques | 000 / **301 (pornhub)** | **301** ✅ |
+| 5 (AllActive) | All active techniques | 000 / **301 (pornhub)** | **301** |
 | 6 (Aggressive) | AllActive + OOO + desync | 000 + **youtube broken** | Not tested |
 
 ### 1.3 Stability and Performance
 
 | Test | Expected | Actual | Status |
 |------|----------|--------|--------|
-| Graceful shutdown | nftables rules cleaned | 0 tables remaining | ✅ PASSED |
-| Memory usage | < 10 MB | 5176 KB (5 MB) | ✅ PASSED |
-| TLS latency overhead | < 2ms | ~0ms (-3ms: 111ms ON vs 115ms OFF) | ✅ PASSED |
-| Invalid mode (0, 99) | Graceful error | clap rejects parameter | ✅ PASSED |
-| Missing root | Clear error message | "missing required capabilities" | ✅ PASSED |
-| Rapid restart | Resilient | systemd rate-limiting kicks in | ⚠️ EXPECTED BEHAVIOR |
+| Graceful shutdown | nftables rules cleaned | 0 tables remaining | PASSED |
+| Memory usage | < 10 MB | 5176 KB (5 MB) | PASSED |
+| TLS latency overhead | < 2ms | ~0ms (-3ms: 111ms ON vs 115ms OFF) | PASSED |
+| Invalid mode (0, 99) | Graceful error | clap rejects parameter | PASSED |
+| Missing root | Clear error message | "missing required capabilities" | PASSED |
+| Rapid restart | Resilient | systemd rate-limiting kicks in | EXPECTED BEHAVIOR |
 
 ### 1.4 Passive Defense Test
 
 | Attack Type | Detected? | Dropped? | Status |
 |-------------|-----------|----------|--------|
-| Forged TCP RST (window=0, TTL=118) | ✅ score=4 | ✅ DROP | ✅ WORKING |
-| Forged TLS Alert (decode_error, TTL=56) | ✅ score=3 | ✅ DROP | ✅ WORKING (NEW FIX) |
-| Inline packet blocking (server response never arrives) | N/A | Cannot intervene | ❌ DESIGN LIMITATION |
+| Forged TCP RST (window=0, TTL=118) | score=4 | DROP | WORKING |
+| Forged TLS Alert (decode_error, TTL=56) | score=3 | DROP | WORKING (NEW FIX) |
+| Inline packet blocking (server response never arrives) | N/A | Cannot intervene | DESIGN LIMITATION |
 
 ---
 
@@ -66,26 +66,26 @@
 **Symptom:** Bypass appeared to not work on any site  
 **Root Cause:** Deployed `/etc/cachydpi/blacklist.txt` was EMPTY (`# empty` comment)  
 **Reason:** Emptied during a previous "empty blacklist" test case and never restored  
-**Class:** 🔧 Test procedure error  
+**Class:** Test procedure error  
 **Impact:** Invalidated all bypass test results  
 **Fix:** Project blacklist file copied → `cp config/blacklist.txt /etc/cachydpi/`  
-**Status:** ✅ FIXED
+**Status:** FIXED
 
 ### F-002: Binary Deployment Drift
 
 **Symptom:** Deployed binary was behind the source code  
 **Root Cause:** `/usr/bin/cachydpi` dated April 7, source code updated but not recompiled and redeployed  
 **Diff:** SYN-ACK nftables rule (CR-001), auto_ttl=true, fake_packet_ttl=0 were missing  
-**Class:** 🔧 Deployment process error  
+**Class:** Deployment process error  
 **Fix:** `cargo build --release && sudo cp target/release/cachydpi /usr/bin/cachydpi`  
-**Status:** ✅ FIXED
+**Status:** FIXED
 
 ### F-003: Forged TLS Alert Not Detected (CRITICAL BUG)
 
 **Symptom:** Passive mode dropped RSTs but connections were still being killed  
 **Root Cause:** DPI uses two attack vectors:
-1. Forged TCP RST → dropped by passive defense ✅
-2. Forged TLS "decode_error" alert → **not detected** ❌
+1. Forged TCP RST → dropped by passive defense
+2. Forged TLS "decode_error" alert → **not detected**
 
 **Evidence:**
 ```
@@ -98,13 +98,13 @@ Journal: (TLS alert not even logged — not reaching INPUT queue)
 1. nftables INPUT chain was not routing PSH+ACK packets from port 443 to the queue
 2. `passive.rs` had no TLS alert detection function
 
-**Class:** 🐛 Bug (missing defense layer)  
+**Class:** Bug (missing defense layer)  
 **Fix:** 
 1. `rules.rs`: Added `tcp sport 443 tcp flags & (psh|ack) == psh|ack meta length < 120 queue num {queue_in} bypass`
 2. `passive.rs`: Added `is_forged_tls_alert()` function (content_type=0x15, fatal alert, score ≥ 3)
 3. `mod.rs`: Added TLS alert check to `evaluate_inbound()`
 
-**Status:** ✅ FIXED — Alert is now detected and dropped:
+**Status:** FIXED — Alert is now detected and dropped:
 ```
 TLS alert scored as forged ttl=56 alert_level=2 alert_desc=50 payload_len=7 score=3
 dropping forged TLS alert from DPI src=162.159.128.233
@@ -122,7 +122,7 @@ dropping forged TLS alert from DPI src=162.159.128.233
 - Server never sent ServerHello (10+ seconds of waiting)
 - DPI forged alert TTL=56 (8 hops) vs real server TTL=44 (20 hops) → different sources
 
-**Class:** ⚠️ Design limitation — cannot be solved client-side  
+**Class:** Design limitation — cannot be solved client-side  
 **Impact:** Cloudflare CDN sites (discord.com, pastebin.com) cannot be bypassed  
 **Note:** pornhub.com works — different CDN/hosting treated differently by DPI
 
@@ -134,7 +134,7 @@ dropping forged TLS alert from DPI src=162.159.128.233
 2. Mode 6 sends out-of-order fragments + fake RST
 3. Real server's TCP stack gets corrupted
 
-**Class:** 🐛 Bug (aggressive strategies causing side effects)  
+**Class:** Bug (aggressive strategies causing side effects)  
 **Fix:** Service file changed from `-m 6` → `-m 5`  
 **Permanent Fix Proposal:** 
 - Use fake RST desync only on retry after initial connection failure
@@ -144,7 +144,7 @@ dropping forged TLS alert from DPI src=162.159.128.233
 
 **Symptom:** Mode changes in `config.toml` had no effect  
 **Root Cause:** `cachydpi.service` had `ExecStart=/usr/bin/cachydpi --foreground -m 6 -vvv` — CLI `-m 6` was overriding `mode = 5` in config  
-**Class:** 🔧 Configuration error  
+**Class:** Configuration error  
 **Fix:** Updated systemd unit from `-m 6` → `-m 5`  
 **Recommendation:** CLI parameters should only be used for temporary overrides; permanent config should be via config file
 
@@ -158,16 +158,16 @@ Data collected during testing revealed the following about the ISP's DPI system:
 
 | Capability | Detected | Evidence |
 |------------|----------|----------|
-| SNI Inspection | ✅ | All blocks occur after ClientHello |
-| Forged RST Injection | ✅ | `RST packet scored as forged ttl=118 window=0` |
-| Forged TLS Alert Injection | ✅ | `TLS alert: decode_error, ttl=56, payload_len=7` |
-| TCP Stream Reassembly | ✅ | TCP segmentation (in-order and reverse) failed to bypass |
-| TLS Record Reassembly | ✅ | TLS record-layer fragmentation failed to bypass |
-| Inline Packet Blocking | ✅ | Server response never arrived even after forged packets were dropped |
-| Fake RST Detection | ✅ | Fake RST desync did not work |
-| DNS Poisoning | ❌ | DNS-over-TLS works, domains resolve correctly |
-| IP-based Blocking | ❌ | Same IPs accessible with non-blocked SNI |
-| ISP Plain DNS Block | ✅ | External DNS (8.8.8.8) blocked on port 53 |
+| SNI Inspection | Yes | All blocks occur after ClientHello |
+| Forged RST Injection | Yes | `RST packet scored as forged ttl=118 window=0` |
+| Forged TLS Alert Injection | Yes | `TLS alert: decode_error, ttl=56, payload_len=7` |
+| TCP Stream Reassembly | Yes | TCP segmentation (in-order and reverse) failed to bypass |
+| TLS Record Reassembly | Yes | TLS record-layer fragmentation failed to bypass |
+| Inline Packet Blocking | Yes | Server response never arrived even after forged packets were dropped |
+| Fake RST Detection | Yes | Fake RST desync did not work |
+| DNS Poisoning | No | DNS-over-TLS works, domains resolve correctly |
+| IP-based Blocking | No | Same IPs accessible with non-blocked SNI |
+| ISP Plain DNS Block | Yes | External DNS (8.8.8.8) blocked on port 53 |
 
 ### DPI Attack Sequence
 
@@ -177,20 +177,20 @@ Data collected during testing revealed the following about the ISP's DPI system:
 [Client] ──ACK──> [DPI] ──ACK──> [Server]
 [Client] ──ClientHello──> [DPI] ─── SNI "discord.com" detected!
                             │
-                            ├── Forged RST → to Client (CachyDPI DROP ✅)
-                            ├── Forged TLS Alert → to Client (CachyDPI DROP ✅)  
-                            ├── RST → to Server (we cannot intervene ❌)
-                            └── Connection tracking → drop subsequent packets ❌
+                            ├── Forged RST → to Client (CachyDPI DROP)
+                            ├── Forged TLS Alert → to Client (CachyDPI DROP)  
+                            ├── RST → to Server (we cannot intervene)
+                            └── Connection tracking → drop subsequent packets
 ```
 
 ### CDN/Hosting-Based Bypass Success
 
 | CDN/Hosting | Bypass | Example | Analysis |
 |-------------|--------|---------|----------|
-| Cloudflare | ❌ | discord.com (162.159.X.X) | DPI aggressively monitors Cloudflare connections |
-| Pastebin hosting | ❌ | pastebin.com | DPI inline block |
-| pornhub hosting | ✅ | pornhub.com (301 redirect) | DPI less aggressive on this CDN or different rules |
-| twinkaboo hosting | ❌ | twinkaboo.com | DPI inline block |
+| Cloudflare | No | discord.com (162.159.X.X) | DPI aggressively monitors Cloudflare connections |
+| Pastebin hosting | No | pastebin.com | DPI inline block |
+| pornhub hosting | Yes | pornhub.com (301 redirect) | DPI less aggressive on this CDN or different rules |
+| twinkaboo hosting | No | twinkaboo.com | DPI inline block |
 
 ---
 
@@ -200,13 +200,13 @@ Data collected during testing revealed the following about the ISP's DPI system:
 
 | # | Fix | Impact | Frequency | Difficulty | Priority |
 |---|-----|--------|-----------|------------|----------|
-| P1 | Forged TLS Alert detection | ⬛⬛⬛⬛⬛ | Every blocked site | Easy | ✅ DONE |
-| P2 | Per-destination auto-TTL | ⬛⬛⬛⬛ | Every connection | Medium | ✅ DONE |
-| P3 | Blacklist curation (per user ISP) | ⬛⬛⬛⬛ | Every installation | Easy | 🔜 Next |
-| P4 | ECH (Encrypted Client Hello) support | ⬛⬛⬛⬛⬛ | All blocked sites | Hard | 📋 Roadmap |
-| P5 | TCP desync-first (SYN before data) | ⬛⬛⬛ | Advanced DPI | Medium | 📋 Roadmap |
-| P6 | Connection retry with escalating strategy | ⬛⬛⬛ | Failed bypass | Medium | 📋 Roadmap |
-| P7 | Aggressive mode safety (blacklist-aware) | ⬛⬛ | Mode 6 users | Easy | 🔜 Next |
+| P1 | Forged TLS Alert detection | 5/5 | Every blocked site | Easy | DONE |
+| P2 | Per-destination auto-TTL | 4/5 | Every connection | Medium | DONE |
+| P3 | Blacklist curation (per user ISP) | 4/5 | Every installation | Easy | Next |
+| P4 | ECH (Encrypted Client Hello) support | 5/5 | All blocked sites | Hard | Roadmap |
+| P5 | TCP desync-first (SYN before data) | 3/5 | Advanced DPI | Medium | Roadmap |
+| P6 | Connection retry with escalating strategy | 3/5 | Failed bypass | Medium | Roadmap |
+| P7 | Aggressive mode safety (blacklist-aware) | 2/5 | Mode 6 users | Easy | Next |
 
 ---
 
@@ -219,18 +219,18 @@ Data collected during testing revealed the following about the ISP's DPI system:
 CachyDPI v1.0.0 is currently a **mid-level DPI bypass tool**:
 
 **Where It Succeeds:**
-- ✅ Passive DPI defense (forged RST + TLS alert dropping) — **works excellently**
-- ✅ Can bypass some blocked sites (e.g., pornhub.com)
-- ✅ Zero latency overhead on normal traffic (~0ms)
-- ✅ Low memory usage (5 MB)
-- ✅ Clean nftables management (automatic setup/cleanup)
-- ✅ Auto-TTL detection (from SYN-ACK)
-- ✅ Stable daemon (systemd integration, rate-limit handling)
+- Passive DPI defense (forged RST + TLS alert dropping) — **works excellently**
+- Can bypass some blocked sites (e.g., pornhub.com)
+- Zero latency overhead on normal traffic (~0ms)
+- Low memory usage (5 MB)
+- Clean nftables management (automatic setup/cleanup)
+- Auto-TTL detection (from SYN-ACK)
+- Stable daemon (systemd integration, rate-limit handling)
 
 **Where It Fails:**
-- ❌ **Cannot bypass advanced inline DPI** (TCP+TLS reassembly with server-side blocking)
-- ❌ Cloudflare CDN sites (discord.com) are inline-blocked by DPI
-- ❌ Mode 6 (Aggressive) is unstable — can break normal traffic
+- **Cannot bypass advanced inline DPI** (TCP+TLS reassembly with server-side blocking)
+- Cloudflare CDN sites (discord.com) are inline-blocked by DPI
+- Mode 6 (Aggressive) is unstable — can break normal traffic
 
 ### Fundamental Limitation
 
@@ -323,7 +323,7 @@ CachyDPI v1.0.0 Bypass Effectiveness:
 
 ## SECTION 7: NEXT STEPS
 
-1. ~~**Per-destination auto-TTL**~~: ✅ COMPLETED — Per-destination TTL cache implemented with HashMap<IpAddr, u8>
+1. ~~**Per-destination auto-TTL**~~: COMPLETED — Per-destination TTL cache implemented with HashMap<IpAddr, u8>
 2. **Blacklist curation tool**: Blacklist configuration wizard based on user's ISP — prevents unnecessary manipulation of non-blocked sites
 3. **ECH support research**: TLS 1.3 Encrypted Client Hello — the only definitive solution against inline DPI
 4. **Connection retry strategy**: Escalating aggressiveness on retry if initial attempt fails (mode 3 → 4 → 5 → 6)

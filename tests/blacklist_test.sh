@@ -175,23 +175,18 @@ test_domain() {
 
     # Determine status
     local status="FAIL"
-    local emoji="❌"
     if [[ "$http_code" =~ ^[23] ]]; then
         status="OK"
-        emoji="✅"
     elif [[ "$http_code" == "403" ]]; then
         status="BLOCKED"
-        emoji="🚫"
     elif [[ "$http_code" =~ ^[45] ]]; then
         status="ERROR"
-        emoji="⚠️"
     elif [[ "$http_code" == "000" ]]; then
         status="TIMEOUT"
-        emoji="⏱️"
     fi
 
     # Write result
-    echo "$domain|$http_code|$status|$emoji|${latency_ms}ms" > "$outfile"
+    echo "$domain|$http_code|$status|${latency_ms}ms" > "$outfile"
 
     # Console progress
     local color="$RED"
@@ -275,10 +270,10 @@ cat > "$REPORT" << HEADER
 | Metric | Value |
 |--------|-------|
 | **Total Domains Tested** | $TOTAL_TESTED |
-| **✅ Accessible (2xx/3xx)** | $COUNT_OK ($PCT_OK%) |
-| **⏱️ Timeout (000)** | $COUNT_TIMEOUT |
-| **🚫 Blocked (403)** | $COUNT_BLOCKED |
-| **⚠️ Server Error (4xx/5xx)** | $COUNT_ERROR |
+| **Accessible (2xx/3xx)** | $COUNT_OK ($PCT_OK%) |
+| **Timeout (000)** | $COUNT_TIMEOUT |
+| **Blocked (403)** | $COUNT_BLOCKED |
+| **Server Error (4xx/5xx)** | $COUNT_ERROR |
 | **Total Failed** | $COUNT_FAIL |
 | **Success Rate** | **${PCT_OK}%** |
 
@@ -299,13 +294,13 @@ Success: [${BAR}] ${PCT_OK}%
 
 ---
 
-## ✅ Accessible Sites ($COUNT_OK)
+## Accessible Sites ($COUNT_OK)
 
 | Domain | HTTP Code | Latency |
 |--------|-----------|---------|
 PROGRESSBAR
 
-grep '|OK|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status emoji latency; do
+grep '|OK|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status latency; do
     echo "| \`$domain\` | $code | $latency |"
 done >> "$REPORT"
 
@@ -313,7 +308,7 @@ cat >> "$REPORT" << SECTION
 
 ---
 
-## ⏱️ Timeout / Unreachable ($COUNT_TIMEOUT)
+## Timeout / Unreachable ($COUNT_TIMEOUT)
 
 These sites did not respond within ${TIMEOUT}s. Could be:
 - ISP DPI blocking (CachyDPI bypass not working)
@@ -325,7 +320,7 @@ These sites did not respond within ${TIMEOUT}s. Could be:
 |--------|-----------|---------|
 SECTION
 
-grep '|TIMEOUT|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status emoji latency; do
+grep '|TIMEOUT|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status latency; do
     echo "| \`$domain\` | $code | $latency |"
 done >> "$REPORT"
 
@@ -333,7 +328,7 @@ cat >> "$REPORT" << SECTION
 
 ---
 
-## 🚫 Blocked / Forbidden ($COUNT_BLOCKED)
+## Blocked / Forbidden ($COUNT_BLOCKED)
 
 These sites returned HTTP 403. The request reached the server but access was denied
 (could be geo-blocking, server-side block, or DPI injection).
@@ -342,7 +337,7 @@ These sites returned HTTP 403. The request reached the server but access was den
 |--------|-----------|---------|
 SECTION
 
-grep '|BLOCKED|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status emoji latency; do
+grep '|BLOCKED|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status latency; do
     echo "| \`$domain\` | $code | $latency |"
 done >> "$REPORT"
 
@@ -350,7 +345,7 @@ cat >> "$REPORT" << SECTION
 
 ---
 
-## ⚠️ Server Errors ($COUNT_ERROR)
+## Server Errors ($COUNT_ERROR)
 
 These sites returned 4xx/5xx errors. The connection was established but the server
 returned an error (not necessarily a DPI issue).
@@ -359,7 +354,7 @@ returned an error (not necessarily a DPI issue).
 |--------|-----------|---------|
 SECTION
 
-grep '|ERROR|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status emoji latency; do
+grep '|ERROR|' "$TMPDIR/all_results.txt" | while IFS='|' read -r domain code status latency; do
     echo "| \`$domain\` | $code | $latency |"
 done >> "$REPORT"
 
@@ -434,9 +429,9 @@ echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
 echo -e "  ${GREEN}Report saved to:${NC} $REPORT"
 echo ""
-echo -e "  ✅ Accessible:  ${GREEN}$COUNT_OK${NC}"
-echo -e "  ⏱️  Timeout:     ${RED}$COUNT_TIMEOUT${NC}"
-echo -e "  🚫 Blocked:     ${YELLOW}$COUNT_BLOCKED${NC}"
-echo -e "  ⚠️  Error:       ${YELLOW}$COUNT_ERROR${NC}"
-echo -e "  📊 Success:     ${GREEN}${PCT_OK}%${NC}"
+echo -e "  Accessible:  ${GREEN}$COUNT_OK${NC}"
+echo -e "  Timeout:     ${RED}$COUNT_TIMEOUT${NC}"
+echo -e "  Blocked:     ${YELLOW}$COUNT_BLOCKED${NC}"
+echo -e "  Error:       ${YELLOW}$COUNT_ERROR${NC}"
+echo -e "  Success:     ${GREEN}${PCT_OK}%${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════${NC}"

@@ -10,14 +10,14 @@
 
 | Status | Count | Percentage | Details |
 |--------|-------|------------|---------|
-| ✅ Accessible | ~3700+ | 76%+ | Accessible with CachyDPI DPI bypass |
-| ❌ Dead / Down | 386 | 7.7% | DNS unresolvable or server down → **removed from blacklist** |
-| 🔴 ISP Blocked (IP) | 229 | 4.6% | IP-level block → CachyDPI cannot bypass |
-| 🟢 ISP Blocked (SNI) | 5 | 0.1% | SNI block → **CachyDPI BYPASSES** ✅ |
-| ☠️ Newly DNS Dead | 1 | 0.02% | Lost DNS resolution during testing |
-| 🟡 Server Blocked (403) | 383 | 7.7% | Blocked by the server itself (geo-block, WAF) |
-| 🟠 Server Error | ~145 | 2.9% | 4xx/5xx server errors |
-| ⚡ Rate Limited | 9 | 0.2% | HTTP 429 - too many requests |
+| Accessible | ~3700+ | 76%+ | Accessible with CachyDPI DPI bypass |
+| Dead / Down | 386 | 7.7% | DNS unresolvable or server down → **removed from blacklist** |
+| ISP Blocked (IP) | 229 | 4.6% | IP-level block → CachyDPI cannot bypass |
+| ISP Blocked (SNI) | 5 | 0.1% | SNI block → **CachyDPI BYPASSES** |
+| Newly DNS Dead | 1 | 0.02% | Lost DNS resolution during testing |
+| Server Blocked (403) | 383 | 7.7% | Blocked by the server itself (geo-block, WAF) |
+| Server Error | ~145 | 2.9% | 4xx/5xx server errors |
+| Rate Limited | 9 | 0.2% | HTTP 429 - too many requests |
 
 **Total tested:** 4999 domains  
 **Active blacklist after cleanup:** 4851 domains
@@ -32,11 +32,11 @@
 
 | Block Type | Count | CachyDPI | Description |
 |------------|-------|----------|-------------|
-| **IP Blocked** | 229 | ❌ Cannot bypass | ISP blocks the target IP directly |
-| **SNI Blocked** | 5 | ✅ BYPASSES | ISP only inspects SNI, CachyDPI bypasses via fragmentation |
+| **IP Blocked** | 229 | Cannot bypass | ISP blocks the target IP directly |
+| **SNI Blocked** | 5 | BYPASSES | ISP only inspects SNI, CachyDPI bypasses via fragmentation |
 | **DNS Dead** | 1 | - | `kuttymovies.com` no longer resolves via DNS |
 
-### SNI Blocked Sites (ACCESSIBLE with CachyDPI) ✅
+### SNI Blocked Sites (ACCESSIBLE with CachyDPI)
 
 All on Google infrastructure — ISP cannot block these IPs (would break Google services):
 
@@ -73,13 +73,13 @@ However, **IP-level blocking** occurs BEFORE the TLS handshake. When the ISP see
 
 | Method | Effectiveness | Description |
 |--------|---------------|-------------|
-| **VPN** | ✅ Definitive | All traffic goes through encrypted tunnel, ISP cannot see target IP |
-| **Tor** | ✅ Definitive | IP is hidden via onion routing |
-| **SOCKS5 Proxy** | ✅ Definitive | Traffic is routed through proxy |
-| **IPv6** | ⚠️ Partial | May work if ISP doesn't apply IPv6 blocking |
-| **DNS-over-HTTPS** | ❌ Ineffective | Block is at IP level, not DNS |
-| **ECH (Encrypted Client Hello)** | ❌ Ineffective | TLS-level, IP block occurs before |
-| **Domain Fronting** | ⚠️ Site-dependent | Only for sites behind CDNs |
+| **VPN** | Definitive | All traffic goes through encrypted tunnel, ISP cannot see target IP |
+| **Tor** | Definitive | IP is hidden via onion routing |
+| **SOCKS5 Proxy** | Definitive | Traffic is routed through proxy |
+| **IPv6** | Partial | May work if ISP doesn't apply IPv6 blocking |
+| **DNS-over-HTTPS** | Ineffective | Block is at IP level, not DNS |
+| **ECH (Encrypted Client Hello)** | Ineffective | TLS-level, IP block occurs before |
+| **Domain Fronting** | Site-dependent | Only for sites behind CDNs |
 
 ### Full List of ISP Blocked Sites (235 sites — 229 IP, 5 SNI, 1 DNS)
 

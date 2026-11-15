@@ -183,15 +183,15 @@ C_TRULY_DEAD=$((C_DNS_DEAD + C_SERVER_DEAD))
 
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
-echo -e "  🪦 DNS Dead (no resolution):    ${RED}$C_DNS_DEAD${NC}"
-echo -e "  💀 Server Dead (no TCP):         ${RED}$C_SERVER_DEAD${NC}"
-echo -e "  🔒 ISP Blocked (DPI):            ${YELLOW}$C_ISP_BLOCKED${NC}"
-echo -e "  🚫 Server Blocked (403):         ${YELLOW}$C_SERVER_BLOCKED${NC}"
-echo -e "  ⏳ Rate Limited (429):            ${YELLOW}$C_RATE_LIMITED${NC}"
-echo -e "  ⚠️  Server Error (other):         ${YELLOW}$C_SERVER_ERROR${NC}"
+echo -e "  DNS Dead (no resolution):    ${RED}$C_DNS_DEAD${NC}"
+echo -e "  Server Dead (no TCP):         ${RED}$C_SERVER_DEAD${NC}"
+echo -e "  ISP Blocked (DPI):            ${YELLOW}$C_ISP_BLOCKED${NC}"
+echo -e "  Server Blocked (403):         ${YELLOW}$C_SERVER_BLOCKED${NC}"
+echo -e "  Rate Limited (429):            ${YELLOW}$C_RATE_LIMITED${NC}"
+echo -e "  Server Error (other):         ${YELLOW}$C_SERVER_ERROR${NC}"
 echo -e "  ──────────────────────────────────────"
-echo -e "  🗑️  Truly Dead (remove):          ${RED}$C_TRULY_DEAD${NC}"
-echo -e "  🔧 Fixable (need bypass):         ${GREEN}$C_ISP_BLOCKED${NC}"
+echo -e "  Truly Dead (remove):          ${RED}$C_TRULY_DEAD${NC}"
+echo -e "  Fixable (need bypass):         ${GREEN}$C_ISP_BLOCKED${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
 
 # ── Save lists for later use ──
