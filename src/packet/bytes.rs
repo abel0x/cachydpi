@@ -58,13 +58,11 @@ pub(crate) fn put_be32(buf: &mut [u8], at: usize, value: u32) -> Option<()> {
 /// The sum of `data` as big-endian 16-bit words, an odd last byte padded
 /// with zero, before folding: the body of every Internet checksum.
 pub(crate) fn sum_words(data: &[u8]) -> u32 {
-    let words = data.chunks_exact(2);
-    let odd = words.remainder().first().map_or(0, |&b| (b as u32) << 8);
+    let (words, rest) = data.as_chunks::<2>();
+    let odd = rest.first().map_or(0, |&b| (b as u32) << 8);
     words
-        .map(|w| match w {
-            [a, b] => u16::from_be_bytes([*a, *b]) as u32,
-            _ => 0,
-        })
+        .iter()
+        .map(|&w| u16::from_be_bytes(w) as u32)
         .sum::<u32>()
         + odd
 }
