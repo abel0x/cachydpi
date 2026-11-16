@@ -92,18 +92,17 @@ const FAKE_HTTP_PAYLOAD: &[u8] = b"GET / HTTP/1.1\r\nHost: www.google.com\r\n\r\
 /// DPI processes this and classifies the connection as going to an allowed domain.
 const FAKE_SNI_DOMAIN: &str = "www.google.com";
 
-/// The 32-byte `random` of a ClientHello, from the kernel's random source.
+/// Fill `out` from the kernel's random source.
 ///
 /// A fake goes out once per connection, so a syscall here costs nothing that
 /// matters. Should `getrandom` fail, the bytes come from the standard
 /// library's per-process random hash keys instead: still unpredictable from
-/// outside and different for every call, which is what the field must be.
-fn client_random() -> [u8; 32] {
-    let mut out = [0u8; 32];
+/// outside and different for every call, which is what these values must be.
+fn fill_random(out: &mut [u8]) {
     // SAFETY: `out` is a valid, writable buffer of exactly `out.len()` bytes.
     let filled = unsafe { libc::getrandom(out.as_mut_ptr().cast(), out.len(), 0) };
     if usize::try_from(filled).is_ok_and(|n| n == out.len()) {
-        return out;
+        return;
     }
 
     use std::hash::{BuildHasher, Hasher};
@@ -115,9 +114,55 @@ fn client_random() -> [u8; 32] {
         let mut h = keys.build_hasher();
         h.write_u64(call);
         h.write_usize(i);
-        chunk.copy_from_slice(&h.finish().to_be_bytes());
+        chunk.copy_from_slice(&h.finish().to_be_bytes()[..chunk.len()]);
     }
+}
+
+/// The 32-byte `random` of a ClientHello.
+fn client_random() -> [u8; 32] {
+    let mut out = [0u8; 32];
+    fill_random(&mut out);
     out
+}
+
+fn random_u32() -> u32 {
+    let mut out = [0u8; 4];
+    fill_random(&mut out);
+    u32::from_ne_bytes(out)
+}
+
+/// Whether two TCP checksum values verify alike. Ones' complement has two
+/// zeros, 0x0000 and 0xFFFF, and a receiver accepts either where the other is
+/// correct.
+fn same_checksum(a: u16, b: u16) -> bool {
+    let canonical = |x: u16| if x == 0xFFFF { 0 } else { x };
+    canonical(a) == canonical(b)
+}
+
+/// A random TCP checksum the receiver is certain to reject.
+///
+/// Random rather than fixed: a constant wrong value is a pattern a DPI can
+/// match on, where a corrupted segment's checksum is just some other number.
+fn wrong_checksum(correct: u16) -> u16 {
+    loop {
+        let candidate = random_u32() as u16;
+        if !same_checksum(candidate, correct) {
+            return candidate;
+        }
+    }
+}
+
+/// How far behind the real data a wrong-SEQ fake starts, as a range.
+///
+/// At least 65536, more than any segment can carry, so the whole fake lies
+/// before the data the server expects and none of it can be taken into the
+/// stream. Far below 2^31, so it never reads as data ahead of the window.
+const WRONG_SEQ_BACK_MIN: u32 = 1 << 16;
+const WRONG_SEQ_BACK_MAX: u32 = 1 << 20;
+
+/// A random distance in that range, so the offset is not a constant either.
+fn wrong_seq_back() -> u32 {
+    WRONG_SEQ_BACK_MIN + random_u32() % (WRONG_SEQ_BACK_MAX - WRONG_SEQ_BACK_MIN + 1)
 }
 
 /// Build a realistic TLS ClientHello payload with a given SNI domain.
@@ -372,9 +417,10 @@ fn build_fake_with_bad_checksum(
         packet[10..12].copy_from_slice(&cksum.to_be_bytes());
     }
 
-    // Set WRONG TCP checksum (0xDEAD)
-    packet[tcp_off + 16] = 0xDE;
-    packet[tcp_off + 17] = 0xAD;
+    // Compute the right checksum, then put a wrong one in its place.
+    tcp::refresh_tcp_checksum(&mut packet, ip_hdr_len);
+    let correct = u16::from_be_bytes([packet[tcp_off + 16], packet[tcp_off + 17]]);
+    packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&wrong_checksum(correct).to_be_bytes());
 
     Some(packet)
 }
@@ -413,8 +459,8 @@ fn build_fake_with_wrong_seq(
     let tcp_off = ip_hdr_len;
     packet[tcp_off + 13] = TCP_PSH | TCP_ACK;
 
-    // Set WRONG sequence number (far out of window)
-    let wrong_seq = tcp_hdr.seq_num.wrapping_sub(100_000);
+    // Set WRONG sequence number: entirely before the data the server expects
+    let wrong_seq = tcp_hdr.seq_num.wrapping_sub(wrong_seq_back());
     packet[tcp_off + 4..tcp_off + 8].copy_from_slice(&wrong_seq.to_be_bytes());
 
     // Fix IP checksum
@@ -441,4 +487,138 @@ fn build_fake_with_wrong_seq(
     }
 
     Some(packet)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// A minimal IPv4 or IPv6 TCP packet carrying `payload`, with a valid
+    /// TCP checksum.
+    fn packet(v6: bool, seq: u32, payload: &[u8]) -> Vec<u8> {
+        let ip_len = if v6 { 40 } else { 20 };
+        let mut p = vec![0u8; ip_len + 20];
+        if v6 {
+            p[0] = 0x60;
+            p[4..6].copy_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
+            p[6] = 6;
+            p[7] = 64;
+            p[8..24].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+            p[24..40]
+                .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        } else {
+            p[0] = 0x45;
+            p[2..4].copy_from_slice(&((40 + payload.len()) as u16).to_be_bytes());
+            p[8] = 64;
+            p[9] = 6;
+            p[12..16].copy_from_slice(&[192, 168, 1, 100]);
+            p[16..20].copy_from_slice(&[93, 184, 216, 34]);
+        }
+        let t = ip_len;
+        p[t..t + 2].copy_from_slice(&40000u16.to_be_bytes());
+        p[t + 2..t + 4].copy_from_slice(&443u16.to_be_bytes());
+        p[t + 4..t + 8].copy_from_slice(&seq.to_be_bytes());
+        p[t + 12] = 5 << 4;
+        p[t + 13] = TCP_PSH | TCP_ACK;
+        p[t + 14..t + 16].copy_from_slice(&64240u16.to_be_bytes());
+        p.extend_from_slice(payload);
+        tcp::refresh_tcp_checksum(&mut p, ip_len);
+        p
+    }
+
+    fn checksum_of(p: &[u8], ip_len: usize) -> u16 {
+        u16::from_be_bytes([p[ip_len + 16], p[ip_len + 17]])
+    }
+
+    fn fakes(
+        v6: bool,
+        seq: u32,
+        build: impl Fn(&[u8], &IpHeader, &TcpHeader<'_>) -> Option<Vec<u8>>,
+    ) -> Vec<Vec<u8>> {
+        let real = packet(v6, seq, b"real data");
+        let ip_hdr = IpHeader::parse(&real).unwrap();
+        let ip_len = ip_hdr.header_len();
+        let tcp_hdr = TcpHeader::parse(&real[ip_len..]).unwrap();
+        (0..64)
+            .map(|_| build(&real, &ip_hdr, &tcp_hdr).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn the_two_zeros_of_ones_complement_count_as_one_value() {
+        assert!(same_checksum(0x0000, 0xFFFF));
+        assert!(same_checksum(0xFFFF, 0x0000));
+        assert!(same_checksum(0x1234, 0x1234));
+        assert!(!same_checksum(0x1234, 0x1235));
+        for _ in 0..10_000 {
+            assert!(!same_checksum(wrong_checksum(0x0000), 0x0000));
+            assert!(!same_checksum(wrong_checksum(0xFFFF), 0xFFFF));
+        }
+    }
+
+    /// The bad-checksum fake must fail verification on both families, and
+    /// its checksum must not be one value a DPI could recognise.
+    #[test]
+    fn bad_checksum_fakes_never_verify_and_do_not_repeat() {
+        for v6 in [false, true] {
+            let ip_len = if v6 { 40 } else { 20 };
+            let built = fakes(v6, 1_000_000, |r, i, t| {
+                build_fake_with_bad_checksum(r, i, t, b"fake payload")
+            });
+            let mut seen = HashSet::new();
+            for fake in &built {
+                let mut fixed = fake.clone();
+                tcp::refresh_tcp_checksum(&mut fixed, ip_len);
+                let correct = checksum_of(&fixed, ip_len);
+                let sent = checksum_of(fake, ip_len);
+                assert!(
+                    !same_checksum(sent, correct),
+                    "v6={v6}: fake carries a valid checksum"
+                );
+                seen.insert(sent);
+            }
+            assert!(
+                seen.len() > 32,
+                "v6={v6}: only {} distinct checksums in 64 fakes",
+                seen.len()
+            );
+        }
+    }
+
+    /// The wrong-SEQ fake must end before the real data, whatever the real
+    /// sequence number, so the server cannot take any of it into the stream.
+    #[test]
+    fn wrong_seq_fakes_lie_wholly_before_the_real_data_and_vary() {
+        let payload = b"fake payload";
+        for v6 in [false, true] {
+            let ip_len = if v6 { 40 } else { 20 };
+            for real_seq in [0u32, 70_000, 0x8000_0000, u32::MAX] {
+                let built = fakes(v6, real_seq, |r, i, t| {
+                    build_fake_with_wrong_seq(r, i, t, payload)
+                });
+                let mut seen = HashSet::new();
+                for fake in &built {
+                    let tcp_hdr = TcpHeader::parse(&fake[ip_len..]).unwrap();
+                    let back = real_seq.wrapping_sub(tcp_hdr.seq_num);
+                    assert!(
+                        (WRONG_SEQ_BACK_MIN..=WRONG_SEQ_BACK_MAX).contains(&back),
+                        "v6={v6} seq={real_seq}: fake starts {back} behind"
+                    );
+                    assert!(back as usize > payload.len());
+                    seen.insert(back);
+
+                    // Its checksum is right: only the position is wrong.
+                    let mut fixed = fake.clone();
+                    tcp::refresh_tcp_checksum(&mut fixed, ip_len);
+                    assert_eq!(checksum_of(fake, ip_len), checksum_of(&fixed, ip_len));
+                }
+                assert!(
+                    seen.len() > 32,
+                    "v6={v6}: only {} distinct offsets in 64 fakes",
+                    seen.len()
+                );
+            }
+        }
+    }
 }

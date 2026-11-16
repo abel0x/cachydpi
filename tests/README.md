@@ -27,7 +27,7 @@ bash tests/run_all_tests.sh --skip-root
 | `logging_single_sink.rs` | 3 | Each message reaches the journal once under systemd |
 | `no_identifying_fields_leak.rs` | 3 | Identifying log fields always go through the redaction switch |
 
-The modules under `src/` carry another 93 unit tests of their own.
+The modules under `src/` carry another 96 unit tests of their own.
 
 ### System Tests (shell scripts, require root)
 

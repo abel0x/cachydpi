@@ -5,6 +5,17 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The wrong-checksum fake (`fake_wrong_checksum`) always carried the TCP
+  checksum `0xDEAD`, and the wrong-SEQ fake (`fake_wrong_seq`) always started
+  exactly 100000 bytes behind the real data: two constants a DPI could match
+  on. The checksum is now a random value that never verifies, and the offset
+  is random between 64 KiB and 1 MiB, still far enough back that no part of
+  the fake can land in the server's stream.
+
 ## [1.10.1] — 2026-11-15
 
 ### Fixed
