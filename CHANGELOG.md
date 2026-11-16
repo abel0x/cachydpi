@@ -29,6 +29,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2 killed the daemon without removing its
+  nftables rules, which stayed behind as after a SIGKILL until the next start.
+  Only SIGTERM and SIGINT were caught. SIGHUP is what closing the terminal of
+  a `--foreground` run sends. All six now shut down cleanly.
 - The fake ClientHello carried only an SNI: no supported_versions, key
   share, signature algorithms or ALPN, a shape no browser sends and one a DPI
   could pick out on its own. It is now built like a browser's, by the same

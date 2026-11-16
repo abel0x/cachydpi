@@ -12,6 +12,15 @@
 set -euo pipefail
 
 SERVICE="cachydpi.service"
+
+# The unit allows five starts a minute (StartLimitBurst=5 in sixty seconds),
+# and these tests stop and start it more often than that on purpose. Past the
+# limit systemd refuses the start ("start-limit-hit") and every later test
+# finds no service to test, so clear the counter before each start.
+start_service() {
+    systemctl reset-failed "$SERVICE" 2>/dev/null || true
+    systemctl start "$SERVICE"
+}
 REPORT_DIR="tests/reports"
 REPORT="$REPORT_DIR/signal_handling_report.txt"
 
@@ -46,6 +55,21 @@ wait_for_active() {
     return 1
 }
 
+# The unit is Type=simple, so systemd calls it active the moment the process
+# starts, about 100 ms before the daemon has installed its rules. A signal
+# sent then tests startup, not a running daemon: a SIGKILL that early leaves
+# no table behind because none was made yet. Ready means the table exists.
+wait_for_ready() {
+    wait_for_active || return 1
+    for i in $(seq 1 30); do
+        if nft list table ip cachydpi &>/dev/null; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 wait_for_inactive() {
     for i in $(seq 1 30); do
         if ! systemctl is-active "$SERVICE" &>/dev/null; then
@@ -65,8 +89,8 @@ sleep 1
 echo "" >> "$REPORT"
 echo "--- Test 1: SIGTERM graceful shutdown ---" >> "$REPORT"
 
-systemctl start "$SERVICE"
-if wait_for_active; then
+start_service
+if wait_for_ready; then
     PID=$(systemctl show -p MainPID --value "$SERVICE")
     echo "  PID: $PID" >> "$REPORT"
 
@@ -113,8 +137,8 @@ cleanup_nft
 echo "" >> "$REPORT"
 echo "--- Test 2: SIGINT graceful shutdown ---" >> "$REPORT"
 
-systemctl start "$SERVICE"
-if wait_for_active; then
+start_service
+if wait_for_ready; then
     PID=$(systemctl show -p MainPID --value "$SERVICE")
 
     kill -INT "$PID" 2>/dev/null || true
@@ -143,17 +167,16 @@ cleanup_nft
 echo "" >> "$REPORT"
 echo "--- Test 3: SIGHUP handling ---" >> "$REPORT"
 
-systemctl start "$SERVICE"
-if wait_for_active; then
+start_service
+if wait_for_ready; then
     PID=$(systemctl show -p MainPID --value "$SERVICE")
 
-    # Send SIGHUP — CachyDPI does not implement config reload,
-    # so it will terminate (default kernel action for SIGHUP).
+    # Send SIGHUP — CachyDPI does not implement config reload, so it shuts
+    # down as on SIGTERM. Closing the terminal of a foreground run sends it.
     kill -HUP "$PID" 2>/dev/null || true
 
     if wait_for_inactive; then
-        # SIGHUP terminates process since no handler — this is expected
-        pass "Process terminated on SIGHUP (no reload handler — expected)"
+        pass "Process shut down on SIGHUP (no reload handler — expected)"
         # Verify nftables cleanup
         sleep 1
         if nft list table ip cachydpi &>/dev/null 2>&1; then
@@ -182,8 +205,8 @@ cleanup_nft
 echo "" >> "$REPORT"
 echo "--- Test 4: SIGUSR1 handling ---" >> "$REPORT"
 
-systemctl start "$SERVICE"
-if wait_for_active; then
+start_service
+if wait_for_ready; then
     PID=$(systemctl show -p MainPID --value "$SERVICE")
 
     # Capture journal before SIGUSR1
@@ -192,10 +215,16 @@ if wait_for_active; then
     kill -USR1 "$PID" 2>/dev/null || true
 
     if wait_for_inactive; then
-        # SIGUSR1 default action is terminate — expected since no handler
-        pass "Process terminated on SIGUSR1 (no handler — default behavior)"
+        # SIGUSR1 has no use of its own, so it shuts down as SIGTERM does
+        pass "Process shut down on SIGUSR1"
+        sleep 1
+        if nft list table ip cachydpi &>/dev/null; then
+            fail "nftables table still exists after SIGUSR1"
+        else
+            pass "nftables cleaned up after SIGUSR1"
+        fi
     else
-        fail "Process unexpectedly survived SIGUSR1 (no handler exists — should terminate)"
+        fail "Process unexpectedly survived SIGUSR1 (it should shut down)"
         systemctl stop "$SERVICE" 2>/dev/null || true
     fi
 else
@@ -209,8 +238,8 @@ cleanup_nft
 echo "" >> "$REPORT"
 echo "--- Test 5: SIGKILL recovery ---" >> "$REPORT"
 
-systemctl start "$SERVICE"
-if wait_for_active; then
+start_service
+if wait_for_ready; then
     PID=$(systemctl show -p MainPID --value "$SERVICE")
 
     kill -9 "$PID" 2>/dev/null || true
@@ -232,7 +261,7 @@ if wait_for_active; then
     cleanup_nft
     systemctl reset-failed "$SERVICE" 2>/dev/null || true
     sleep 1
-    systemctl start "$SERVICE" 2>/dev/null || true
+    start_service 2>/dev/null || true
     if wait_for_active; then
         pass "Service recovers after SIGKILL"
     else
@@ -251,8 +280,8 @@ cleanup_nft
 echo "" >> "$REPORT"
 echo "--- Test 6: Rapid signal sequence (handled signals) ---" >> "$REPORT"
 
-systemctl start "$SERVICE"
-if wait_for_active; then
+start_service
+if wait_for_ready; then
     PID=$(systemctl show -p MainPID --value "$SERVICE")
 
     # Only use signals CachyDPI actually handles (SIGTERM, SIGINT)
@@ -281,8 +310,8 @@ cleanup_nft
 echo "" >> "$REPORT"
 echo "--- Test 7: Double SIGTERM ---" >> "$REPORT"
 
-systemctl start "$SERVICE"
-if wait_for_active; then
+start_service
+if wait_for_ready; then
     PID=$(systemctl show -p MainPID --value "$SERVICE")
 
     kill -TERM "$PID" 2>/dev/null || true
@@ -314,7 +343,7 @@ systemctl reset-failed "$SERVICE" 2>/dev/null || true
 
 RESTART_OK=true
 for i in $(seq 1 5); do
-    systemctl start "$SERVICE" 2>/dev/null || true
+    start_service 2>/dev/null || true
     if ! wait_for_active; then
         fail "Restart cycle $i: failed to start"
         RESTART_OK=false

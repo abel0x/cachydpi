@@ -628,17 +628,30 @@ fn run_dns(action: &cachydpi::cli::DnsAction) -> Result<()> {
     }
 }
 
+/// Every catchable signal whose default action ends the process.
+///
+/// Left to that default, the process dies on the spot and its nftables table
+/// stays behind, the same as after a SIGKILL. SIGHUP is the one that matters
+/// most: closing the terminal of a foreground run sends it. There is no
+/// config reload to give it instead, so each of these shuts down the way
+/// SIGTERM does, removing the rules on the way out.
+const SHUTDOWN_SIGNALS: [i32; 6] = [
+    signal_hook::consts::SIGHUP,
+    signal_hook::consts::SIGINT,
+    signal_hook::consts::SIGQUIT,
+    signal_hook::consts::SIGTERM,
+    signal_hook::consts::SIGUSR1,
+    signal_hook::consts::SIGUSR2,
+];
+
 /// Set up signal handlers for graceful shutdown
 fn setup_signal_handlers() -> Result<()> {
     // Use a dedicated thread for signal handling
     std::thread::Builder::new()
         .name("cachydpi-sig".to_string())
         .spawn(move || {
-            let mut signals = signal_hook::iterator::Signals::new([
-                signal_hook::consts::SIGINT,
-                signal_hook::consts::SIGTERM,
-            ])
-            .expect("failed to register signal handlers");
+            let mut signals = signal_hook::iterator::Signals::new(SHUTDOWN_SIGNALS)
+                .expect("failed to register signal handlers");
 
             for sig in signals.forever() {
                 info!(signal = sig, "received signal");

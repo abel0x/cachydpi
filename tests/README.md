@@ -35,7 +35,7 @@ The modules under `src/` carry another 104 unit tests of their own.
 |--------|-------------|
 | `test_privilege_escalation.sh` | Capability enforcement, UID drop, systemd hardening |
 | `test_crash_safety.sh` | nftables cleanup after SIGTERM/SIGKILL/SIGINT |
-| `test_signal_handling.sh` | Graceful shutdown, signal sequence, restart cycles |
+| `test_signal_handling.sh` | Graceful shutdown on every terminating signal, signal sequence, restart cycles |
 | `test_nftables_isolation.sh` | Table isolation, Docker/libvirt coexistence |
 | `test_performance.sh` | Memory, CPU, FD count, startup time, resource limits |
 | `test_build_reproducibility.sh` | Clippy, reproducible builds, dependency audit |

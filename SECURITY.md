@@ -141,7 +141,7 @@ That makes a panic on the packet path fatal to the daemon, so the code that read
 
 - **Panic hook** (installed in `main.rs` before any network setup): on panic it prints the message and runs `nft delete table ip cachydpi` (and `ip6` when IPv6 is enabled), then — because the build uses `panic = "abort"` — the process aborts. This keeps a crash from leaving stale queue rules behind.
 - **`bypass` flag on every nftables rule** (`queue num … bypass`): if the daemon is not running (crash, stop, restart), packets bypass the queue instead of being dropped. A daemon failure does **not** black-hole traffic.
-- **Graceful signals**: `SIGTERM`/`SIGINT`/`SIGHUP` are handled on a dedicated thread (not in an async-signal handler); rules are removed and queues closed on exit.
+- **Graceful signals**: `SIGTERM`, `SIGINT`, `SIGHUP`, `SIGQUIT`, `SIGUSR1` and `SIGUSR2`, every catchable signal that would otherwise end the process, are handled on a dedicated thread (not in an async-signal handler); rules are removed and queues closed on exit.
 - **Restart limits** (systemd): `Restart=on-failure`, `RestartSec=5`, `StartLimitBurst=5`, `StartLimitIntervalSec=60` stop crash loops.
 
 ---
