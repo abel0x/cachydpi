@@ -7,7 +7,6 @@ authors = ["abel0x <https://github.com/abel0x>"]
 description = "System-wide DPI bypass tool for Linux — GoodbyeDPI alternative"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/abel0x/cachydpi"
-homepage = "https://github.com/abel0x/cachydpi"
 keywords = ["dpi", "bypass", "censorship", "nftables", "cachyos"]
 categories = ["network-programming", "command-line-utilities"]
 build = "build.rs"
