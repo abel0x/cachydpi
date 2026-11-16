@@ -131,6 +131,29 @@ pub struct DpiFingerprint {
     pub recommended_mode: u8,
 }
 
+/// What the probe shows the network, printed before it runs.
+///
+/// The probe is not hidden by anything: it connects from this machine's own
+/// address, and the names it sends are in the clear. On a network that logs
+/// connections to blocked sites, running it is itself a record that this
+/// address went looking for `domain`. The user should know that before the
+/// first packet leaves, not after.
+pub fn visibility_notice(domain: &str, dns_encrypted: bool) -> String {
+    let mut notice = format!(
+        "Warning: this connects from this machine straight to {domain}. It sends TLS \
+         handshakes naming {domain} and {CONTROL_SNI}, and a plain-HTTP request for \
+         {domain}; the names travel unencrypted. Anyone watching the network, the ISP \
+         and its DPI included, can see and log that this address tried to reach {domain}."
+    );
+    if !dns_encrypted {
+        notice.push_str(
+            " DNS is not encrypted, so looking up its address reveals the name to the \
+             resolver and the network as well (sudo cachydpi dns enable).",
+        );
+    }
+    notice
+}
+
 /// Probe `domain` from this machine.
 ///
 /// WARNING: makes real connections to the site. With CachyDPI running, the
@@ -314,6 +337,22 @@ mod tests {
             RTT * 2,
             RTT
         ));
+    }
+
+    #[test]
+    fn the_notice_names_every_host_the_probe_reveals() {
+        let notice = visibility_notice("blocked.example", true);
+        assert!(notice.contains("blocked.example"));
+        assert!(notice.contains(CONTROL_SNI));
+        assert!(notice.contains("unencrypted"));
+        assert!(
+            !notice.contains("DNS"),
+            "DNS is encrypted, nothing to say about it"
+        );
+
+        let notice = visibility_notice("blocked.example", false);
+        assert!(notice.contains("DNS is not encrypted"));
+        assert!(notice.contains("cachydpi dns enable"));
     }
 
     #[test]

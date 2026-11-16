@@ -139,7 +139,7 @@ The TUI connects to the daemon's Unix socket (`/run/cachydpi/metrics.sock`, fall
 | `settings` | Interactive domain-filter mode selector (`list` / `all`), writes the choice to the config |
 | `monitor` | Real-time TUI dashboard (no root) |
 | `status` | Show current status |
-| `detect <domain>` | Probe the target (default `www.youtube.com`) to fingerprint the ISP's DPI; **makes real network connections** |
+| `detect <domain>` | Probe the target (default `www.youtube.com`) to fingerprint the ISP's DPI; **connects straight to the site from your own address, with its name in the clear** — anyone watching the network, the ISP included, can log that you tried to reach it |
 | `dns status` / `dns enable` / `dns disable` | Check or turn on encrypted DNS (see [DNS security](#dns-security)) |
 | `restart` | `systemctl restart cachydpi` |
 | `force-stop` | Stop the service, SIGKILL it if it has not exited after 5 s, then remove its nftables rules (root) |

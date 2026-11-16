@@ -403,6 +403,11 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
                      network with the bypass in place. Stop it first to see the blocking itself."
                 );
             }
+            let dns = cachydpi::dns::status();
+            println!(
+                "{}",
+                cachydpi::dpi_detect::visibility_notice(domain, dns.encrypted())
+            );
             println!("Probing {domain}...");
             let r = cachydpi::dpi_detect::detect_dpi(domain)?;
             println!("\n── Results ──");
@@ -421,7 +426,7 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
                 Some(false) => println!("Plain HTTP:     no injected redirect seen"),
                 None => println!("Plain HTTP:     not tested (port 80 unreachable)"),
             }
-            print_dns_status(&cachydpi::dns::status());
+            print_dns_status(&dns);
             println!(
                 "Recommended:    -m {}{}",
                 r.recommended_mode,

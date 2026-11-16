@@ -14,6 +14,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `www.google.com`, the name used until now, and must be a lowercase
   hostname.
 
+### Changed
+
+- `cachydpi detect` now warns, before the first packet leaves, that it
+  connects straight to the domain from this machine with the domain's name in
+  the clear, so the ISP can log that this address tried to reach it; and, when
+  DNS is not encrypted, that the lookup reveals the name too.
+
 ### Fixed
 
 - The fake ClientHello carried only an SNI: no supported_versions, key

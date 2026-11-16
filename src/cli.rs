@@ -126,7 +126,8 @@ pub enum Commands {
     RemoveRules,
     /// Show current status
     Status,
-    /// Run DPI fingerprint detection
+    /// Run DPI fingerprint detection. Connects straight to the domain from
+    /// this machine, which anyone watching the network can see
     Detect {
         /// Target domain to test
         #[arg(default_value = "www.youtube.com")]
