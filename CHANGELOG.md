@@ -16,6 +16,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- The packet parsers and strategies read and write packets only through
+  checked accessors, and lints in `src/packet` and `src/strategies` reject any
+  index or unwrap that could panic. With `panic = "abort"` a panic there would
+  stop the daemon, so a malformed packet is now passed over by construction
+  rather than by each length check being right. A fuzz target exercises the
+  whole packet path and runs in CI.
 - `cachydpi detect` now warns, before the first packet leaves, that it
   connects straight to the domain from this machine with the domain's name in
   the clear, so the ISP can log that this address tried to reach it; and, when

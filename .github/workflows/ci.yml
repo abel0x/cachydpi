@@ -66,6 +66,48 @@ jobs:
           CACHYDPI_REQUIRE_NETNS_TESTS: "1"
         run: unshare -Urn --map-auto --map-root-user cargo test --all-features -- --test-threads=1
 
+  # Arbitrary bytes through ParsedPacket::parse and the strategy engine. A
+  # panic there would stop the daemon (release builds abort on panic), so
+  # any crash fails the run and its input is kept as an artifact.
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-fuzz
+            fuzz/target
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-fuzz-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev libmnl-dev pkg-config
+
+      - name: Install cargo-fuzz
+        run: command -v cargo-fuzz || cargo install cargo-fuzz --locked
+
+      - name: Fuzz the packet path
+        run: |
+          mkdir -p fuzz/corpus/parse_packet
+          cargo fuzz run parse_packet fuzz/corpus/parse_packet fuzz/seeds/parse_packet -- -max_total_time=120
+
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
   audit:
     name: Security Audit
     runs-on: ubuntu-24.04

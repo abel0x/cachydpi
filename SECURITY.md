@@ -127,9 +127,13 @@ The codebase is safe Rust except for narrowly scoped `unsafe` needed for C FFI a
 |----------|---------|
 | `src/nfqueue/` | FFI to `libnetfilter_queue` (`nfq_*`) — return values checked, null guards |
 | `src/privileges.rs` | `prctl` (keepcaps, `PR_SET_NAME`, `NoNewPrivileges` probe), `setuid`/`setgid` |
-| `src/rawsocket.rs` / `src/strategies/` | raw packet send; socket created via the safe `socket2` crate and marked `SO_MARK` |
+| `src/rawsocket.rs` | raw packet send; socket created via the safe `socket2` crate and marked `SO_MARK` |
+| `src/random.rs` | `getrandom` for the fields of fake packets and probe handshakes a DPI must not see repeat |
+| `src/metrics.rs` | `sysconf(_SC_CLK_TCK)` to turn CPU ticks into seconds |
 
 The metrics server and the `cachydpi-monitor` TUI contain no `unsafe` and need no elevated privileges. The release profile compiles with `panic = "abort"` (`Cargo.toml`), removing unwinding machinery.
+
+That makes a panic on the packet path fatal to the daemon, so the code that reads and rewrites packets off the queue cannot index or unwrap: `src/packet/` and `src/strategies/` deny `clippy::indexing_slicing` and `clippy::unwrap_used`, and every read goes through checked helpers (`src/packet/bytes.rs`) that return `None` for a short or lying packet. A fuzz target (`fuzz/fuzz_targets/parse_packet.rs`) feeds arbitrary bytes to `ParsedPacket::parse` in both directions and on through the strategy engine in every mode, with every technique on; CI runs it on each push.
 
 ---
 

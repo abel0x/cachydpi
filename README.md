@@ -402,6 +402,7 @@ make test               # cargo test
 make clippy             # lints
 make fmt                # rustfmt --check
 cargo test              # unit + integration tests (no root)
+cargo +nightly fuzz run parse_packet fuzz/corpus/parse_packet fuzz/seeds/parse_packet  # fuzz the packet path (needs cargo-fuzz)
 ```
 
 System-level test scripts (require root and a live network) live under `tests/` — see [`tests/README.md`](tests/README.md) and [`tests/TEST_PLAN.md`](tests/TEST_PLAN.md).

@@ -27,7 +27,7 @@ bash tests/run_all_tests.sh --skip-root
 | `logging_single_sink.rs` | 3 | Each message reaches the journal once under systemd |
 | `no_identifying_fields_leak.rs` | 3 | Identifying log fields always go through the redaction switch |
 
-The modules under `src/` carry another 101 unit tests of their own.
+The modules under `src/` carry another 104 unit tests of their own.
 
 ### System Tests (shell scripts, require root)
 
@@ -47,6 +47,17 @@ The modules under `src/` carry another 101 unit tests of their own.
 |--------|-------------|
 | `blacklist_test.sh` | Test blacklist domains for accessibility (`--all`, `--sample N`, `--quick`) |
 | `analyze_dead_sites.sh` | Find dead/unreachable domains in the blacklist |
+
+### Fuzzing
+
+`fuzz/fuzz_targets/parse_packet.rs` feeds arbitrary bytes to `ParsedPacket::parse` in both directions and, when they parse, to the strategy engine in all seven modes with every technique on. `fuzz/seeds/parse_packet/` holds real packets to start from: SYN, SYN-ACK, ClientHellos over IPv4 and IPv6, HTTP requests and responses, RSTs and a QUIC Initial. CI fuzzes for two minutes on every push.
+
+```bash
+rustup toolchain install nightly && cargo install cargo-fuzz
+cargo +nightly fuzz run parse_packet fuzz/corpus/parse_packet fuzz/seeds/parse_packet -- -max_total_time=300
+```
+
+A crash leaves its input in `fuzz/artifacts/parse_packet/`; `cargo +nightly fuzz run parse_packet <file>` replays it.
 
 ## Running Individual Tests
 
