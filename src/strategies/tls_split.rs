@@ -10,7 +10,7 @@
 // 1. TCP-level segmentation: Split the TCP payload across segments
 // 2. TLS record-level fragmentation: Split into multiple TLS records
 
-use crate::packet::ip::{self, IpHeader};
+use crate::packet::ip::IpHeader;
 use crate::packet::tcp::{self, TcpHeader};
 use crate::packet::tls::TlsClientHello;
 
@@ -121,36 +121,23 @@ pub fn split_tls_client_hello(
         "splitting TLS ClientHello at SNI"
     );
 
-    let first_part = &payload[..split_at];
-    let second_part = &payload[split_at..];
+    let (first_part, second_part) = payload.split_at_checked(split_at)?;
+    let seg = |part: &[u8], seq: u32| {
+        tcp::resegment(
+            raw_packet,
+            ip_hdr.header_len(),
+            tcp_hdr.header_len,
+            part,
+            seq,
+        )
+    };
 
-    let ip_hdr_len = ip_hdr.header_len();
-    let tcp_hdr_len = tcp_hdr.header_len;
-    let headers = &raw_packet[..ip_hdr_len + tcp_hdr_len];
-
-    // Build fragment 1: up to the SNI split point
-    let frag1 = build_tls_fragment(
-        headers,
-        ip_hdr_len,
-        tcp_hdr_len,
-        first_part,
-        tcp_hdr.seq_num,
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
-
-    // Build fragment 2: from SNI split point to end
-    let frag2 = build_tls_fragment(
-        headers,
-        ip_hdr_len,
-        tcp_hdr_len,
+    // Fragment 1 up to the SNI split point, fragment 2 from there to the end
+    let frag1 = seg(first_part, tcp_hdr.seq_num)?;
+    let frag2 = seg(
         second_part,
         tcp_hdr.seq_num.wrapping_add(first_part.len() as u32),
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
+    )?;
 
     Some(vec![frag1, frag2])
 }
@@ -174,36 +161,22 @@ pub fn split_tls_out_of_order(
         return None;
     }
 
-    let first_part = &payload[..split_at];
-    let second_part = &payload[split_at..];
+    let (first_part, second_part) = payload.split_at_checked(split_at)?;
+    let seg = |part: &[u8], seq: u32| {
+        tcp::resegment(
+            raw_packet,
+            ip_hdr.header_len(),
+            tcp_hdr.header_len,
+            part,
+            seq,
+        )
+    };
 
-    let ip_hdr_len = ip_hdr.header_len();
-    let tcp_hdr_len = tcp_hdr.header_len;
-    let headers = &raw_packet[..ip_hdr_len + tcp_hdr_len];
-
-    // Fragment 2 FIRST (out of order)
-    let frag2 = build_tls_fragment(
-        headers,
-        ip_hdr_len,
-        tcp_hdr_len,
+    let frag2 = seg(
         second_part,
         tcp_hdr.seq_num.wrapping_add(first_part.len() as u32),
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
-
-    // Then fragment 1
-    let frag1 = build_tls_fragment(
-        headers,
-        ip_hdr_len,
-        tcp_hdr_len,
-        first_part,
-        tcp_hdr.seq_num,
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
+    )?;
+    let frag1 = seg(first_part, tcp_hdr.seq_num)?;
 
     trace!(
         sni = %crate::logging::peer(hello.sni.as_deref().unwrap_or("-")),
@@ -267,13 +240,17 @@ pub fn split_tls_multi_fragment(
         return None;
     }
 
-    let part1 = &payload[..split1];
-    let part2 = &payload[split1..split2];
-    let part3 = &payload[split2..];
-
-    let ip_hdr_len = ip_hdr.header_len();
-    let tcp_hdr_len = tcp_hdr.header_len;
-    let headers = &raw_packet[..ip_hdr_len + tcp_hdr_len];
+    let (head, part3) = payload.split_at_checked(split2)?;
+    let (part1, part2) = head.split_at_checked(split1)?;
+    let seg = |part: &[u8], seq: u32| {
+        tcp::resegment(
+            raw_packet,
+            ip_hdr.header_len(),
+            tcp_hdr.header_len,
+            part,
+            seq,
+        )
+    };
 
     trace!(
         sni = %crate::logging::peer(hello.sni.as_deref().unwrap_or("-")),
@@ -284,38 +261,10 @@ pub fn split_tls_multi_fragment(
         "multi-fragment TLS ClientHello (3 segments)"
     );
 
-    let frag1 = build_tls_fragment(
-        headers,
-        ip_hdr_len,
-        tcp_hdr_len,
-        part1,
-        tcp_hdr.seq_num,
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
-    let frag2 = build_tls_fragment(
-        headers,
-        ip_hdr_len,
-        tcp_hdr_len,
-        part2,
-        tcp_hdr.seq_num.wrapping_add(part1.len() as u32),
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
-    let frag3 = build_tls_fragment(
-        headers,
-        ip_hdr_len,
-        tcp_hdr_len,
-        part3,
-        tcp_hdr
-            .seq_num
-            .wrapping_add((part1.len() + part2.len()) as u32),
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
+    let seq = tcp_hdr.seq_num;
+    let frag1 = seg(part1, seq)?;
+    let frag2 = seg(part2, seq.wrapping_add(part1.len() as u32))?;
+    let frag3 = seg(part3, seq.wrapping_add(head.len() as u32))?;
 
     if disorder {
         // Reverse order: frag3 first, then frag2, then frag1
@@ -324,72 +273,6 @@ pub fn split_tls_multi_fragment(
     } else {
         Some(vec![frag1, frag2, frag3])
     }
-}
-
-/// Build a single TLS fragment as a complete IP packet
-#[allow(clippy::too_many_arguments)]
-fn build_tls_fragment(
-    original_headers: &[u8],
-    ip_hdr_len: usize,
-    tcp_hdr_len: usize,
-    payload: &[u8],
-    seq: u32,
-    ack: u32,
-    flags: u8,
-    window: u16,
-) -> Vec<u8> {
-    let total_len = ip_hdr_len + tcp_hdr_len + payload.len();
-    let mut packet = Vec::with_capacity(total_len);
-
-    // Copy headers
-    packet.extend_from_slice(&original_headers[..ip_hdr_len]);
-    packet.extend_from_slice(&original_headers[ip_hdr_len..ip_hdr_len + tcp_hdr_len]);
-    packet.extend_from_slice(payload);
-
-    // Fix IP length field
-    let version = (packet[0] >> 4) & 0x0F;
-    if version == 4 {
-        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-    } else if version == 6 {
-        let payload_len = (total_len - ip_hdr_len) as u16;
-        packet[4..6].copy_from_slice(&payload_len.to_be_bytes());
-    }
-
-    // Fix TCP fields
-    let tcp_off = ip_hdr_len;
-    packet[tcp_off + 4..tcp_off + 8].copy_from_slice(&seq.to_be_bytes());
-    packet[tcp_off + 8..tcp_off + 12].copy_from_slice(&ack.to_be_bytes());
-    packet[tcp_off + 13] = flags;
-    packet[tcp_off + 14..tcp_off + 16].copy_from_slice(&window.to_be_bytes());
-
-    // Recalculate checksums
-    packet[tcp_off + 16] = 0;
-    packet[tcp_off + 17] = 0;
-    if version == 4 {
-        // IP checksum
-        packet[10] = 0;
-        packet[11] = 0;
-        let ip_cksum = ip::ipv4_checksum(&packet[..ip_hdr_len]);
-        packet[10..12].copy_from_slice(&ip_cksum.to_be_bytes());
-
-        // TCP checksum
-        if packet.len() >= 20 {
-            let src_ip: [u8; 4] = packet[12..16].try_into().unwrap_or([0; 4]);
-            let dst_ip: [u8; 4] = packet[16..20].try_into().unwrap_or([0; 4]);
-            let tcp_cksum = tcp::tcp_checksum_v4(&src_ip, &dst_ip, &packet[tcp_off..]);
-            packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&tcp_cksum.to_be_bytes());
-        }
-    } else if version == 6 {
-        // TCP checksum (mandatory for IPv6)
-        if packet.len() >= 40 {
-            let src_ip: [u8; 16] = packet[8..24].try_into().unwrap_or([0; 16]);
-            let dst_ip: [u8; 16] = packet[24..40].try_into().unwrap_or([0; 16]);
-            let tcp_cksum = tcp::tcp_checksum_v6(&src_ip, &dst_ip, &packet[tcp_off..]);
-            packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&tcp_cksum.to_be_bytes());
-        }
-    }
-
-    packet
 }
 
 #[cfg(test)]

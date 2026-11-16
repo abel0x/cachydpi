@@ -7,6 +7,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use super::bytes::{array_at, be16_at, fold, put_be16, sum_words, u8_at};
+
 /// IP protocol numbers
 pub const PROTO_TCP: u8 = 6;
 pub const PROTO_UDP: u8 = 17;
@@ -54,11 +56,7 @@ pub struct Ipv6Header {
 impl IpHeader {
     /// Parse an IP header from a raw byte slice
     pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.is_empty() {
-            return None;
-        }
-
-        let version = (data[0] >> 4) & 0x0F;
+        let version = (u8_at(data, 0)? >> 4) & 0x0F;
         match version {
             4 => Ipv4Header::parse(data).map(IpHeader::V4),
             6 => Ipv6Header::parse(data).map(IpHeader::V6),
@@ -138,31 +136,25 @@ impl IpHeader {
 
 impl Ipv4Header {
     fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < IPV4_MIN_HEADER {
-            return None;
-        }
+        let h: [u8; IPV4_MIN_HEADER] = array_at(data, 0)?;
 
-        let ihl = (data[0] & 0x0F) as usize;
+        let ihl = (h[0] & 0x0F) as usize;
         let header_length = ihl * 4;
         if header_length < IPV4_MIN_HEADER || data.len() < header_length {
             return None;
         }
 
-        let total_length = u16::from_be_bytes([data[2], data[3]]);
-        let identification = u16::from_be_bytes([data[4], data[5]]);
-        let flags_fragment = u16::from_be_bytes([data[6], data[7]]);
-
         Some(Ipv4Header {
-            version_ihl: data[0],
-            dscp_ecn: data[1],
-            total_length,
-            identification,
-            flags_fragment,
-            ttl: data[8],
-            protocol: data[9],
-            checksum: u16::from_be_bytes([data[10], data[11]]),
-            src: Ipv4Addr::new(data[12], data[13], data[14], data[15]),
-            dst: Ipv4Addr::new(data[16], data[17], data[18], data[19]),
+            version_ihl: h[0],
+            dscp_ecn: h[1],
+            total_length: u16::from_be_bytes([h[2], h[3]]),
+            identification: u16::from_be_bytes([h[4], h[5]]),
+            flags_fragment: u16::from_be_bytes([h[6], h[7]]),
+            ttl: h[8],
+            protocol: h[9],
+            checksum: u16::from_be_bytes([h[10], h[11]]),
+            src: Ipv4Addr::new(h[12], h[13], h[14], h[15]),
+            dst: Ipv4Addr::new(h[16], h[17], h[18], h[19]),
             header_length,
         })
     }
@@ -170,27 +162,19 @@ impl Ipv4Header {
 
 impl Ipv6Header {
     fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < IPV6_HEADER {
-            return None;
-        }
+        let h: [u8; IPV6_HEADER] = array_at(data, 0)?;
 
-        let traffic_class = ((data[0] & 0x0F) << 4) | ((data[1] >> 4) & 0x0F);
-        let flow_label = ((data[1] as u32 & 0x0F) << 16) | ((data[2] as u32) << 8) | data[3] as u32;
-        let payload_length = u16::from_be_bytes([data[4], data[5]]);
-
-        let mut src_bytes = [0u8; 16];
-        let mut dst_bytes = [0u8; 16];
-        src_bytes.copy_from_slice(&data[8..24]);
-        dst_bytes.copy_from_slice(&data[24..40]);
+        let traffic_class = ((h[0] & 0x0F) << 4) | ((h[1] >> 4) & 0x0F);
+        let flow_label = ((h[1] as u32 & 0x0F) << 16) | ((h[2] as u32) << 8) | h[3] as u32;
 
         Some(Ipv6Header {
             traffic_class,
             flow_label,
-            payload_length,
-            next_header: data[6],
-            hop_limit: data[7],
-            src: Ipv6Addr::from(src_bytes),
-            dst: Ipv6Addr::from(dst_bytes),
+            payload_length: u16::from_be_bytes([h[4], h[5]]),
+            next_header: h[6],
+            hop_limit: h[7],
+            src: Ipv6Addr::from(array_at::<16>(&h, 8)?),
+            dst: Ipv6Addr::from(array_at::<16>(&h, 24)?),
         })
     }
 }
@@ -202,24 +186,7 @@ pub fn ipv4_checksum(header: &[u8]) -> u16 {
     if header.len() < 2 {
         return 0;
     }
-    let mut sum: u32 = 0;
-    let len = header.len();
-    let mut i = 0;
-
-    while i < len - 1 {
-        let word = u16::from_be_bytes([header[i], header[i + 1]]);
-        sum += word as u32;
-        i += 2;
-    }
-    if len % 2 == 1 {
-        sum += (header[len - 1] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !sum as u16
+    fold(sum_words(header))
 }
 
 /// Build an IPv4 header from scratch
@@ -232,25 +199,58 @@ pub fn build_ipv4_header(
     identification: u16,
 ) -> Vec<u8> {
     let total_len = (IPV4_MIN_HEADER + payload_len) as u16;
-    let mut header = vec![0u8; IPV4_MIN_HEADER];
+    let [l0, l1] = total_len.to_be_bytes();
+    let [i0, i1] = identification.to_be_bytes();
+    let [s0, s1, s2, s3] = src.octets();
+    let [d0, d1, d2, d3] = dst.octets();
+    let mut header = [
+        0x45, // Version 4, IHL 5
+        0x00, // DSCP/ECN
+        l0, l1, i0, i1, 0x40, // Don't Fragment flag
+        0x00, ttl, protocol, 0, 0, // checksum, zero for calculation
+        s0, s1, s2, s3, d0, d1, d2, d3,
+    ];
 
-    header[0] = 0x45; // Version 4, IHL 5
-    header[1] = 0x00; // DSCP/ECN
-    header[2..4].copy_from_slice(&total_len.to_be_bytes());
-    header[4..6].copy_from_slice(&identification.to_be_bytes());
-    header[6] = 0x40; // Don't Fragment flag
-    header[7] = 0x00;
-    header[8] = ttl;
-    header[9] = protocol;
-    // Checksum at [10..12] = 0 for calculation
-    header[12..16].copy_from_slice(&src.octets());
-    header[16..20].copy_from_slice(&dst.octets());
+    let [c0, c1] = ipv4_checksum(&header).to_be_bytes();
+    header[10] = c0;
+    header[11] = c1;
 
-    // Calculate and set checksum
-    let cksum = ipv4_checksum(&header);
-    header[10..12].copy_from_slice(&cksum.to_be_bytes());
+    header.to_vec()
+}
 
-    header
+/// The header length an IPv4 packet declares, if the packet is IPv4 and
+/// actually holds that much header.
+///
+/// The IHL field is attacker-influenced; a value below the minimum or beyond
+/// the buffer must not be used to slice.
+fn ipv4_header_len(packet: &[u8]) -> Option<usize> {
+    let first = u8_at(packet, 0)?;
+    if first >> 4 != 4 {
+        return None;
+    }
+    let ihl = (first & 0x0F) as usize * 4;
+    (ihl >= IPV4_MIN_HEADER && packet.len() >= ihl).then_some(ihl)
+}
+
+/// Write the length fields of a packet whose IP header is `ip_hdr_len` bytes
+/// to match the packet's size: IPv4's total length, IPv6's payload length.
+/// The IPv4 header checksum is left for the caller to refresh.
+pub fn set_ip_lengths(packet: &mut [u8], ip_hdr_len: usize) -> Option<()> {
+    let len = packet.len();
+    match u8_at(packet, 0)? >> 4 {
+        4 => put_be16(packet, 2, u16::try_from(len).ok()?),
+        6 => put_be16(packet, 4, u16::try_from(len.checked_sub(ip_hdr_len)?).ok()?),
+        _ => None,
+    }
+}
+
+/// Recompute the header checksum of an IPv4 packet in place. None, and
+/// nothing changed, if the packet is not IPv4 or its header is truncated.
+pub fn refresh_ipv4_checksum(packet: &mut [u8]) -> Option<()> {
+    let ihl = ipv4_header_len(packet)?;
+    put_be16(packet, 10, 0)?;
+    let checksum = ipv4_checksum(packet.get(..ihl)?);
+    put_be16(packet, 10, checksum)
 }
 
 /// Give a burst of injected TCP segments one IPv4 identification each,
@@ -270,59 +270,35 @@ pub fn build_ipv4_header(
 pub fn number_tcp_burst<'a>(packets: impl IntoIterator<Item = &'a mut Vec<u8>>) {
     let mut next: Option<u16> = None;
     for packet in packets {
-        if packet.len() < IPV4_MIN_HEADER || packet[0] >> 4 != 4 || packet[9] != 6 {
-            continue;
-        }
-        let ihl = (packet[0] & 0x0F) as usize * 4;
-        if ihl < IPV4_MIN_HEADER || packet.len() < ihl {
+        if ipv4_header_len(packet).is_none() || u8_at(packet, 9) != Some(6) {
             continue;
         }
         // More-fragments flag or a non-zero fragment offset: an IP fragment.
-        if u16::from_be_bytes([packet[6], packet[7]]) & 0x3FFF != 0 {
+        if be16_at(packet, 6).is_none_or(|f| f & 0x3FFF != 0) {
             continue;
         }
         let id = match next {
             Some(id) => id,
-            None => {
-                let first = u16::from_be_bytes([packet[4], packet[5]]);
-                if first == 0 {
-                    return;
-                }
-                first
-            }
+            None => match be16_at(packet, 4) {
+                Some(0) | None => return,
+                Some(first) => first,
+            },
         };
-        packet[4..6].copy_from_slice(&id.to_be_bytes());
-        packet[10] = 0;
-        packet[11] = 0;
-        let cksum = ipv4_checksum(&packet[..ihl]);
-        packet[10..12].copy_from_slice(&cksum.to_be_bytes());
+        if put_be16(packet, 4, id).is_none() || refresh_ipv4_checksum(packet).is_none() {
+            continue;
+        }
         next = Some(id.wrapping_add(1));
     }
 }
 
 /// Set TTL in a raw IPv4 packet and recalculate checksum
 pub fn set_ipv4_ttl(packet: &mut [u8], new_ttl: u8) {
-    if packet.len() < IPV4_MIN_HEADER {
+    // Bail before mutating so a malformed packet is left untouched rather
+    // than TTL-modified with a stale checksum.
+    if ipv4_header_len(packet).is_none() {
         return;
     }
-    let version = (packet[0] >> 4) & 0x0F;
-    if version != 4 {
-        return;
+    if super::bytes::put_u8(packet, 8, new_ttl).is_some() {
+        let _ = refresh_ipv4_checksum(packet);
     }
-
-    // The IHL field is attacker-influenced; a header length that exceeds the
-    // buffer (or is below the minimum) must not be used to slice, or the
-    // ipv4_checksum call below would panic. Bail before mutating so a malformed
-    // packet is left untouched rather than TTL-modified with a stale checksum.
-    let ihl = (packet[0] & 0x0F) as usize * 4;
-    if ihl < IPV4_MIN_HEADER || packet.len() < ihl {
-        return;
-    }
-
-    packet[8] = new_ttl;
-    // Recalculate header checksum
-    packet[10] = 0;
-    packet[11] = 0;
-    let cksum = ipv4_checksum(&packet[..ihl]);
-    packet[10..12].copy_from_slice(&cksum.to_be_bytes());
 }

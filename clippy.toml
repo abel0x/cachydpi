@@ -1,0 +1,5 @@
+# The unwrap and indexing lints enabled for src/packet and src/strategies
+# guard the packet path against panics on malformed input. Tests build their
+# own inputs and may index and unwrap freely.
+allow-unwrap-in-tests = true
+allow-indexing-slicing-in-tests = true

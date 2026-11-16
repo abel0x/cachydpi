@@ -4,7 +4,13 @@
 //
 // Provides zero-copy parsing of IP, TCP, UDP, TLS, and HTTP packets.
 // All parsers work on byte slices without allocation where possible.
+//
+// Everything here reads bytes off the network. An out-of-range index or an
+// unwrap on a short packet would panic on the packet path, so both are denied;
+// reads go through `bytes` and return None instead.
+#![deny(clippy::unwrap_used, clippy::indexing_slicing)]
 
+pub(crate) mod bytes;
 pub mod http;
 pub mod ip;
 pub mod tcp;

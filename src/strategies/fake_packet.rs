@@ -13,6 +13,7 @@
 // somewhere harmless.
 
 use crate::config::Config;
+use crate::packet::bytes::{be16_at, put_be16, put_u8};
 use crate::packet::ip::{self, IpHeader};
 use crate::packet::tcp::{self, TCP_ACK, TCP_PSH, TCP_RST, TcpHeader};
 
@@ -28,61 +29,45 @@ pub fn create_fake_rst_desync(
     tcp_hdr: &TcpHeader<'_>,
     fake_ttl: u8,
 ) -> Option<Vec<u8>> {
-    let ip_hdr_len = ip_hdr.header_len();
-    let tcp_hdr_len = tcp_hdr.header_len;
-
-    if real_packet.len() < ip_hdr_len + tcp_hdr_len {
-        return None;
-    }
-
-    // Build RST packet with no payload
-    let total_len = ip_hdr_len + tcp_hdr_len;
-    let mut packet = Vec::with_capacity(total_len);
-
-    // Copy IP + TCP headers from original
-    packet.extend_from_slice(&real_packet[..total_len]);
-
-    // Fix IP total length
-    let version = (packet[0] >> 4) & 0x0F;
-    if version == 4 {
-        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-        // Set fake TTL
-        packet[8] = fake_ttl;
-        // Recalculate IP checksum
-        packet[10] = 0;
-        packet[11] = 0;
-        let cksum = ip::ipv4_checksum(&packet[..ip_hdr_len]);
-        packet[10..12].copy_from_slice(&cksum.to_be_bytes());
-    } else if version == 6 {
-        packet[7] = fake_ttl;
-        let payload_len = tcp_hdr_len as u16;
-        packet[4..6].copy_from_slice(&payload_len.to_be_bytes());
-    }
-
-    // Set TCP flags to RST+ACK
-    let tcp_off = ip_hdr_len;
-    packet[tcp_off + 13] = TCP_RST | TCP_ACK;
-
-    // Use seq+1 so DPI processes it (looks like response to current data)
-    let rst_seq = tcp_hdr.seq_num.wrapping_add(1);
-    packet[tcp_off + 4..tcp_off + 8].copy_from_slice(&rst_seq.to_be_bytes());
-
-    // Recalculate TCP checksum
-    packet[tcp_off + 16] = 0;
-    packet[tcp_off + 17] = 0;
-    if version == 4 && packet.len() >= 20 {
-        let src_ip: [u8; 4] = packet[12..16].try_into().unwrap_or([0; 4]);
-        let dst_ip: [u8; 4] = packet[16..20].try_into().unwrap_or([0; 4]);
-        let cksum = tcp::tcp_checksum_v4(&src_ip, &dst_ip, &packet[tcp_off..]);
-        packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&cksum.to_be_bytes());
-    } else if version == 6 && packet.len() >= 40 {
-        let src_ip: [u8; 16] = packet[8..24].try_into().unwrap_or([0; 16]);
-        let dst_ip: [u8; 16] = packet[24..40].try_into().unwrap_or([0; 16]);
-        let cksum = tcp::tcp_checksum_v6(&src_ip, &dst_ip, &packet[tcp_off..]);
-        packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&cksum.to_be_bytes());
-    }
-
+    // RST+ACK with no payload, at seq+1 so DPI processes it (looks like a
+    // response to current data)
+    let packet = forge(
+        real_packet,
+        ip_hdr,
+        tcp_hdr,
+        &[],
+        tcp_hdr.seq_num.wrapping_add(1),
+        TCP_RST | TCP_ACK,
+        Some(fake_ttl),
+    )?;
     trace!(ttl = fake_ttl, "created fake RST desync packet");
+    Some(packet)
+}
+
+/// A packet cut from `real_packet` that carries `payload` at `seq` with
+/// `flags`, and `ttl` as its TTL or hop limit if given; lengths and checksums
+/// match. None if `real_packet` does not hold the headers it is said to.
+fn forge(
+    real_packet: &[u8],
+    ip_hdr: &IpHeader,
+    tcp_hdr: &TcpHeader<'_>,
+    payload: &[u8],
+    seq: u32,
+    flags: u8,
+    ttl: Option<u8>,
+) -> Option<Vec<u8>> {
+    let ip_hdr_len = ip_hdr.header_len();
+    let mut packet = tcp::resegment(real_packet, ip_hdr_len, tcp_hdr.header_len, payload, seq)?;
+    put_u8(&mut packet, ip_hdr_len + 13, flags)?;
+    let v4 = ip_hdr.is_v4();
+    if let Some(ttl) = ttl {
+        // IPv4 keeps its TTL at byte 8, IPv6 its hop limit at byte 7.
+        put_u8(&mut packet, if v4 { 8 } else { 7 }, ttl)?;
+    }
+    if v4 {
+        ip::refresh_ipv4_checksum(&mut packet)?;
+    }
+    tcp::refresh_tcp_checksum(&mut packet, ip_hdr_len);
     Some(packet)
 }
 
@@ -199,6 +184,7 @@ pub fn create_fake_packets(
 
 /// Build a fake packet with a TTL that will expire before reaching the server.
 /// The DPI box (closer to the client) will see it, but it won't reach the server.
+/// Its TCP checksum is correct: some DPI verify checksums.
 fn build_fake_with_ttl(
     real_packet: &[u8],
     ip_hdr: &IpHeader,
@@ -206,62 +192,16 @@ fn build_fake_with_ttl(
     fake_payload: &[u8],
     ttl: u8,
 ) -> Option<Vec<u8>> {
-    let ip_hdr_len = ip_hdr.header_len();
-    let tcp_hdr_len = tcp_hdr.header_len;
-
-    if real_packet.len() < ip_hdr_len + tcp_hdr_len {
-        return None;
-    }
-
-    let total_len = ip_hdr_len + tcp_hdr_len + fake_payload.len();
-    let mut packet = Vec::with_capacity(total_len);
-
-    // Copy IP header from original
-    packet.extend_from_slice(&real_packet[..ip_hdr_len]);
-    // Copy TCP header from original
-    packet.extend_from_slice(&real_packet[ip_hdr_len..ip_hdr_len + tcp_hdr_len]);
-    // Add fake payload
-    packet.extend_from_slice(fake_payload);
-
-    // Set length and fake TTL. IPv6 keeps its flow label where IPv4 keeps the
-    // total length, so the length is written per version.
-    let version = (packet[0] >> 4) & 0x0F;
-    if version == 4 {
-        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-        packet[8] = ttl;
-        // Recalculate IP checksum
-        packet[10] = 0;
-        packet[11] = 0;
-        let cksum = ip::ipv4_checksum(&packet[..ip_hdr_len]);
-        packet[10..12].copy_from_slice(&cksum.to_be_bytes());
-    } else if version == 6 {
-        // Set hop limit for IPv6
-        packet[7] = ttl;
-        // Fix payload length
-        let payload_len = (tcp_hdr_len + fake_payload.len()) as u16;
-        packet[4..6].copy_from_slice(&payload_len.to_be_bytes());
-    }
-
-    // Fix TCP: use PSH+ACK flags, set same seq/ack as original
-    let tcp_off = ip_hdr_len;
-    packet[tcp_off + 13] = TCP_PSH | TCP_ACK;
-
-    // Recalculate TCP checksum (must be correct — some DPI verify checksums)
-    packet[tcp_off + 16] = 0;
-    packet[tcp_off + 17] = 0;
-    if version == 4 && packet.len() >= 20 {
-        let src_ip: [u8; 4] = packet[12..16].try_into().unwrap_or([0; 4]);
-        let dst_ip: [u8; 4] = packet[16..20].try_into().unwrap_or([0; 4]);
-        let cksum = tcp::tcp_checksum_v4(&src_ip, &dst_ip, &packet[tcp_off..]);
-        packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&cksum.to_be_bytes());
-    } else if version == 6 && packet.len() >= 40 {
-        let src_ip: [u8; 16] = packet[8..24].try_into().unwrap_or([0; 16]);
-        let dst_ip: [u8; 16] = packet[24..40].try_into().unwrap_or([0; 16]);
-        let cksum = tcp::tcp_checksum_v6(&src_ip, &dst_ip, &packet[tcp_off..]);
-        packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&cksum.to_be_bytes());
-    }
-
-    Some(packet)
+    let seq = tcp_hdr.seq_num;
+    forge(
+        real_packet,
+        ip_hdr,
+        tcp_hdr,
+        fake_payload,
+        seq,
+        TCP_PSH | TCP_ACK,
+        Some(ttl),
+    )
 }
 
 /// Build a fake packet with an intentionally wrong TCP checksum.
@@ -272,110 +212,44 @@ fn build_fake_with_bad_checksum(
     tcp_hdr: &TcpHeader<'_>,
     fake_payload: &[u8],
 ) -> Option<Vec<u8>> {
-    let ip_hdr_len = ip_hdr.header_len();
-    let tcp_hdr_len = tcp_hdr.header_len;
+    let seq = tcp_hdr.seq_num;
+    let mut packet = forge(
+        real_packet,
+        ip_hdr,
+        tcp_hdr,
+        fake_payload,
+        seq,
+        TCP_PSH | TCP_ACK,
+        None,
+    )?;
 
-    if real_packet.len() < ip_hdr_len + tcp_hdr_len {
-        return None;
-    }
-
-    let total_len = ip_hdr_len + tcp_hdr_len + fake_payload.len();
-    let mut packet = Vec::with_capacity(total_len);
-
-    packet.extend_from_slice(&real_packet[..ip_hdr_len]);
-    packet.extend_from_slice(&real_packet[ip_hdr_len..ip_hdr_len + tcp_hdr_len]);
-    packet.extend_from_slice(fake_payload);
-
-    // Fix IP length field
-    let version = (packet[0] >> 4) & 0x0F;
-    if version == 4 {
-        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-    } else if version == 6 {
-        let payload_len = (total_len - ip_hdr_len) as u16;
-        packet[4..6].copy_from_slice(&payload_len.to_be_bytes());
-    }
-
-    let tcp_off = ip_hdr_len;
-    packet[tcp_off + 13] = TCP_PSH | TCP_ACK;
-
-    // Fix IP checksum (must be correct or packet won't be routed)
-    if version == 4 {
-        packet[10] = 0;
-        packet[11] = 0;
-        let cksum = ip::ipv4_checksum(&packet[..ip_hdr_len]);
-        packet[10..12].copy_from_slice(&cksum.to_be_bytes());
-    }
-
-    // Compute the right checksum, then put a wrong one in its place.
-    tcp::refresh_tcp_checksum(&mut packet, ip_hdr_len);
-    let correct = u16::from_be_bytes([packet[tcp_off + 16], packet[tcp_off + 17]]);
-    packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&wrong_checksum(correct).to_be_bytes());
-
+    // The right checksum is in place; put a wrong one where it was.
+    let checksum_at = ip_hdr.header_len() + 16;
+    let correct = be16_at(&packet, checksum_at)?;
+    put_be16(&mut packet, checksum_at, wrong_checksum(correct))?;
     Some(packet)
 }
 
 /// Build a fake packet with a wrong TCP sequence number.
 /// The server ignores it (out of window), but DPI may still process it.
+/// Its checksum is correct for the wrong data.
 fn build_fake_with_wrong_seq(
     real_packet: &[u8],
     ip_hdr: &IpHeader,
     tcp_hdr: &TcpHeader<'_>,
     fake_payload: &[u8],
 ) -> Option<Vec<u8>> {
-    let ip_hdr_len = ip_hdr.header_len();
-    let tcp_hdr_len = tcp_hdr.header_len;
-
-    if real_packet.len() < ip_hdr_len + tcp_hdr_len {
-        return None;
-    }
-
-    let total_len = ip_hdr_len + tcp_hdr_len + fake_payload.len();
-    let mut packet = Vec::with_capacity(total_len);
-
-    packet.extend_from_slice(&real_packet[..ip_hdr_len]);
-    packet.extend_from_slice(&real_packet[ip_hdr_len..ip_hdr_len + tcp_hdr_len]);
-    packet.extend_from_slice(fake_payload);
-
-    // Fix IP length field
-    let version = (packet[0] >> 4) & 0x0F;
-    if version == 4 {
-        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-    } else if version == 6 {
-        let payload_len = (total_len - ip_hdr_len) as u16;
-        packet[4..6].copy_from_slice(&payload_len.to_be_bytes());
-    }
-
-    let tcp_off = ip_hdr_len;
-    packet[tcp_off + 13] = TCP_PSH | TCP_ACK;
-
-    // Set WRONG sequence number: entirely before the data the server expects
+    // Entirely before the data the server expects
     let wrong_seq = tcp_hdr.seq_num.wrapping_sub(wrong_seq_back());
-    packet[tcp_off + 4..tcp_off + 8].copy_from_slice(&wrong_seq.to_be_bytes());
-
-    // Fix IP checksum
-    if version == 4 {
-        packet[10] = 0;
-        packet[11] = 0;
-        let cksum = ip::ipv4_checksum(&packet[..ip_hdr_len]);
-        packet[10..12].copy_from_slice(&cksum.to_be_bytes());
-    }
-
-    // Recalculate TCP checksum (must be correct for the wrong data)
-    packet[tcp_off + 16] = 0;
-    packet[tcp_off + 17] = 0;
-    if version == 4 && packet.len() >= 20 {
-        let src_ip: [u8; 4] = packet[12..16].try_into().unwrap_or([0; 4]);
-        let dst_ip: [u8; 4] = packet[16..20].try_into().unwrap_or([0; 4]);
-        let cksum = tcp::tcp_checksum_v4(&src_ip, &dst_ip, &packet[tcp_off..]);
-        packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&cksum.to_be_bytes());
-    } else if version == 6 && packet.len() >= 40 {
-        let src_ip: [u8; 16] = packet[8..24].try_into().unwrap_or([0; 16]);
-        let dst_ip: [u8; 16] = packet[24..40].try_into().unwrap_or([0; 16]);
-        let cksum = tcp::tcp_checksum_v6(&src_ip, &dst_ip, &packet[tcp_off..]);
-        packet[tcp_off + 16..tcp_off + 18].copy_from_slice(&cksum.to_be_bytes());
-    }
-
-    Some(packet)
+    forge(
+        real_packet,
+        ip_hdr,
+        tcp_hdr,
+        fake_payload,
+        wrong_seq,
+        TCP_PSH | TCP_ACK,
+        None,
+    )
 }
 
 #[cfg(test)]

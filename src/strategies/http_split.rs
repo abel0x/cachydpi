@@ -9,7 +9,7 @@
 // via raw socket, each containing part of the HTTP request.
 
 use crate::packet::http;
-use crate::packet::ip::{self, IpHeader};
+use crate::packet::ip::IpHeader;
 use crate::packet::tcp::{self, TcpHeader};
 
 use tracing::trace;
@@ -57,107 +57,16 @@ pub fn split_http_request(
         "splitting HTTP request"
     );
 
-    let first_part = &payload[..split_at];
-    let second_part = &payload[split_at..];
+    let (first_part, second_part) = payload.split_at_checked(split_at)?;
 
-    // Build two TCP segments
+    // Two TCP segments; the second's sequence number advances by the first's
+    // length.
     let ip_hdr_len = ip_hdr.header_len();
     let tcp_hdr_len = tcp_hdr.header_len;
-    let ip_and_tcp_header = &raw_packet[..ip_hdr_len + tcp_hdr_len];
-
-    // Fragment 1: IP+TCP headers + first part of payload
-    let frag1 = build_fragment(
-        ip_and_tcp_header,
-        ip_hdr_len,
-        tcp_hdr_len,
-        first_part,
-        tcp_hdr.seq_num,
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
-
-    // Fragment 2: IP+TCP headers + second part of payload
-    // Sequence number advances by first_part length
-    let frag2 = build_fragment(
-        ip_and_tcp_header,
-        ip_hdr_len,
-        tcp_hdr_len,
-        second_part,
-        tcp_hdr.seq_num.wrapping_add(first_part.len() as u32),
-        tcp_hdr.ack_num,
-        tcp_hdr.flags,
-        tcp_hdr.window_size,
-    );
+    let seq = tcp_hdr.seq_num;
+    let frag1 = tcp::resegment(raw_packet, ip_hdr_len, tcp_hdr_len, first_part, seq)?;
+    let seq2 = seq.wrapping_add(first_part.len() as u32);
+    let frag2 = tcp::resegment(raw_packet, ip_hdr_len, tcp_hdr_len, second_part, seq2)?;
 
     Some(vec![frag1, frag2])
-}
-
-/// Build a single TCP fragment (complete IP packet) from headers + payload
-#[allow(clippy::too_many_arguments)]
-fn build_fragment(
-    original_headers: &[u8],
-    ip_hdr_len: usize,
-    tcp_hdr_len: usize,
-    payload: &[u8],
-    seq: u32,
-    ack: u32,
-    flags: u8,
-    window: u16,
-) -> Vec<u8> {
-    let total_len = ip_hdr_len + tcp_hdr_len + payload.len();
-    let mut packet = Vec::with_capacity(total_len);
-
-    // Copy original IP header
-    packet.extend_from_slice(&original_headers[..ip_hdr_len]);
-    // Copy original TCP header (including options)
-    packet.extend_from_slice(&original_headers[ip_hdr_len..ip_hdr_len + tcp_hdr_len]);
-    // Append payload
-    packet.extend_from_slice(payload);
-
-    // Fix IP length field
-    let version = (packet[0] >> 4) & 0x0F;
-    if version == 4 {
-        let ip_total_len = total_len as u16;
-        packet[2..4].copy_from_slice(&ip_total_len.to_be_bytes());
-    } else if version == 6 {
-        let payload_len = (total_len - ip_hdr_len) as u16;
-        packet[4..6].copy_from_slice(&payload_len.to_be_bytes());
-    }
-
-    // Fix TCP sequence number
-    let tcp_offset = ip_hdr_len;
-    packet[tcp_offset + 4..tcp_offset + 8].copy_from_slice(&seq.to_be_bytes());
-    packet[tcp_offset + 8..tcp_offset + 12].copy_from_slice(&ack.to_be_bytes());
-    packet[tcp_offset + 13] = flags;
-    packet[tcp_offset + 14..tcp_offset + 16].copy_from_slice(&window.to_be_bytes());
-
-    // Recalculate checksums
-    packet[tcp_offset + 16] = 0;
-    packet[tcp_offset + 17] = 0;
-    if version == 4 {
-        // IP checksum
-        packet[10] = 0;
-        packet[11] = 0;
-        let cksum = ip::ipv4_checksum(&packet[..ip_hdr_len]);
-        packet[10..12].copy_from_slice(&cksum.to_be_bytes());
-
-        // TCP checksum
-        if packet.len() >= 20 {
-            let src_ip: [u8; 4] = packet[12..16].try_into().unwrap_or([0; 4]);
-            let dst_ip: [u8; 4] = packet[16..20].try_into().unwrap_or([0; 4]);
-            let cksum = tcp::tcp_checksum_v4(&src_ip, &dst_ip, &packet[tcp_offset..]);
-            packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&cksum.to_be_bytes());
-        }
-    } else if version == 6 {
-        // TCP checksum (mandatory for IPv6)
-        if packet.len() >= 40 {
-            let src_ip: [u8; 16] = packet[8..24].try_into().unwrap_or([0; 16]);
-            let dst_ip: [u8; 16] = packet[24..40].try_into().unwrap_or([0; 16]);
-            let cksum = tcp::tcp_checksum_v6(&src_ip, &dst_ip, &packet[tcp_offset..]);
-            packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&cksum.to_be_bytes());
-        }
-    }
-
-    packet
 }

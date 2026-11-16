@@ -8,6 +8,7 @@
 // - ICMP unreachable messages
 
 use crate::flow_ttl::FlowTtl;
+use crate::packet::bytes::{array_at, u8_at};
 use crate::packet::{ParsedPacket, http};
 use tracing::trace;
 
@@ -156,26 +157,28 @@ pub fn is_forged_icmp_unreachable(raw_packet: &[u8]) -> bool {
     if raw_packet.len() < 28 {
         return false;
     }
+    let Some(first) = u8_at(raw_packet, 0) else {
+        return false;
+    };
 
     // Check if IPv4
-    let version = (raw_packet[0] >> 4) & 0x0F;
+    let version = (first >> 4) & 0x0F;
     if version != 4 {
         return false;
     }
 
-    let protocol = raw_packet[9];
     // ICMP protocol = 1
-    if protocol != 1 {
+    if u8_at(raw_packet, 9) != Some(1) {
         return false;
     }
 
-    let ip_hdr_len = ((raw_packet[0] & 0x0F) as usize) * 4;
+    let ip_hdr_len = ((first & 0x0F) as usize) * 4;
     if raw_packet.len() < ip_hdr_len + 4 {
         return false;
     }
-
-    let icmp_type = raw_packet[ip_hdr_len];
-    let icmp_code = raw_packet[ip_hdr_len + 1];
+    let Some([icmp_type, icmp_code]) = array_at::<2>(raw_packet, ip_hdr_len) else {
+        return false;
+    };
 
     // Type 3 = Destination Unreachable
     // Code 1 = Host Unreachable, Code 3 = Port Unreachable
@@ -196,17 +199,14 @@ pub fn is_forged_icmp_unreachable(raw_packet: &[u8]) -> bool {
 /// Whether a payload is a plaintext fatal TLS alert record — the only kind a
 /// DPI box can forge, and the only kind worth judging.
 fn is_fatal_tls_alert(payload: &[u8]) -> bool {
-    // content_type(1) + version(2) + length(2) + level(1) + description(1)
-    if payload.len() < 7 || payload[0] != 0x15 {
+    // content_type(1) + version(2) + length(2) + level(1) + description(1):
+    // an alert record, TLS 0x0301..=0x0304, at fatal level.
+    let [0x15, 0x03, 0x01..=0x04, l0, l1, 2, _, ..] = payload else {
         return false;
-    }
-    // TLS version 0x0301..=0x0304
-    if payload[1] != 0x03 || payload[2] == 0 || payload[2] > 0x04 {
-        return false;
-    }
+    };
     // Two bytes for a single alert; DPI may pad
-    let record_len = u16::from_be_bytes([payload[3], payload[4]]);
-    (2..=10).contains(&record_len) && payload[5] == 2
+    let record_len = u16::from_be_bytes([*l0, *l1]);
+    (2..=10).contains(&record_len)
 }
 
 /// Check if an incoming TLS packet looks like a forged TLS alert from DPI.
@@ -221,8 +221,9 @@ pub fn is_forged_tls_alert(payload: &[u8], packet: &ParsedPacket<'_>) -> bool {
     if !is_fatal_tls_alert(payload) {
         return false;
     }
-    let alert_level = payload[5];
-    let alert_desc = payload[6];
+    let Some([_, _, _, _, _, alert_level, alert_desc]) = array_at::<7>(payload, 0) else {
+        return false;
+    };
 
     let mut score: u32 = 0;
 

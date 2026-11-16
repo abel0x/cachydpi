@@ -39,11 +39,10 @@ impl<'a> HttpRequest<'a> {
         // whole payload to be UTF-8 would reject such requests and skip Host
         // fragmentation, leaving the domain readable by DPI.
         let line_end = data.windows(2).position(|w| w == b"\r\n")?;
-        let request_line = std::str::from_utf8(&data[..line_end]).ok()?;
+        let request_line = std::str::from_utf8(data.get(..line_end)?).ok()?;
 
         // Check for common HTTP methods
-        let method_end = request_line.find(' ')?;
-        let method = &request_line[..method_end];
+        let (method, after_method) = request_line.split_once(' ')?;
 
         if !matches!(
             method,
@@ -53,9 +52,7 @@ impl<'a> HttpRequest<'a> {
         }
 
         // Find URI end
-        let after_method = &request_line[method_end + 1..];
-        let uri_end = after_method.find(' ')?;
-        let uri = &after_method[..uri_end];
+        let (uri, _) = after_method.split_once(' ')?;
 
         // Byte offset just past the request line's CRLF
         let first_line_end = line_end + 2;
@@ -66,35 +63,34 @@ impl<'a> HttpRequest<'a> {
         let mut host_length: Option<usize> = None;
 
         // Search for "\r\nHost: " or "\r\nhost: " etc. by scanning bytes
-        let bytes = data;
-        let mut i = 0;
-        while i + 8 <= bytes.len() {
-            if bytes[i] == b'\r'
-                && bytes[i + 1] == b'\n'
-                && (bytes[i + 2] == b'H' || bytes[i + 2] == b'h')
-                && (bytes[i + 3] == b'o' || bytes[i + 3] == b'O')
-                && (bytes[i + 4] == b's' || bytes[i + 4] == b'S')
-                && (bytes[i + 5] == b't' || bytes[i + 5] == b'T')
-                && bytes[i + 6] == b':'
-                && bytes[i + 7] == b' '
-            {
-                let value_start = i + 8;
-                // Find end of header value
-                let mut value_end = bytes.len();
-                for j in value_start..bytes.len().saturating_sub(1) {
-                    if bytes[j] == b'\r' && bytes[j + 1] == b'\n' {
-                        value_end = j;
-                        break;
-                    }
-                }
-                if let Ok(host_value) = std::str::from_utf8(&bytes[value_start..value_end]) {
-                    host = Some(host_value.trim().to_lowercase());
-                    host_offset = Some(value_start);
-                    host_length = Some(value_end - value_start);
-                }
-                break;
+        let host_header = data.windows(8).position(|w| {
+            matches!(
+                w,
+                [
+                    b'\r',
+                    b'\n',
+                    b'H' | b'h',
+                    b'o' | b'O',
+                    b's' | b'S',
+                    b't' | b'T',
+                    b':',
+                    b' '
+                ]
+            )
+        });
+        if let Some(i) = host_header {
+            let value_start = i + 8;
+            let rest = data.get(value_start..).unwrap_or_default();
+            // The value runs to the next CRLF, or to the end of the segment.
+            let value_len = rest
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .unwrap_or(rest.len());
+            if let Some(Ok(host_value)) = rest.get(..value_len).map(std::str::from_utf8) {
+                host = Some(host_value.trim().to_lowercase());
+                host_offset = Some(value_start);
+                host_length = Some(value_len);
             }
-            i += 1;
         }
 
         Some(HttpRequest {
@@ -142,7 +138,9 @@ pub fn is_http_redirect(data: &[u8]) -> bool {
     }
     // "HTTP/1.x 302" or "HTTP/1.x 301"
     data.starts_with(b"HTTP/1.")
-        && (data[9..12] == *b"302" || data[9..12] == *b"301" || data[9..12] == *b"307")
+        && data
+            .get(9..12)
+            .is_some_and(|code| matches!(code, b"302" | b"301" | b"307"))
 }
 
 /// Find the best split point for an HTTP request to break the Host header

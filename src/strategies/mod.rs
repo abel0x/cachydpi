@@ -6,6 +6,11 @@
 // implements a specific bypass method. The engine evaluates packets
 // and applies the appropriate combination of strategies based on the
 // configured mode.
+//
+// The strategies rewrite packets taken off the queue, so the same rule as in
+// `packet` holds: no indexing and no unwrap, which would panic on a malformed
+// packet and stop the bypass for every connection.
+#![deny(clippy::unwrap_used, clippy::indexing_slicing)]
 
 pub mod fake_packet;
 pub mod http_split;

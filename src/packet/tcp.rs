@@ -5,6 +5,8 @@
 // Provides parsing, flag checking, and reconstruction of TCP headers
 // for DPI bypass packet manipulation.
 
+use super::bytes::{array_at, fold, put_be16, sum_words, u8_at};
+
 /// Minimum TCP header length (no options)
 const TCP_MIN_HEADER: usize = 20;
 
@@ -37,27 +39,21 @@ pub struct TcpHeader<'a> {
 impl<'a> TcpHeader<'a> {
     /// Parse a TCP header from a byte slice (starting right after IP header)
     pub fn parse(data: &'a [u8]) -> Option<Self> {
-        if data.len() < TCP_MIN_HEADER {
-            return None;
-        }
+        let h: [u8; TCP_MIN_HEADER] = array_at(data, 0)?;
 
-        let src_port = u16::from_be_bytes([data[0], data[1]]);
-        let dst_port = u16::from_be_bytes([data[2], data[3]]);
-        let seq_num = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-        let ack_num = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-        let data_offset = (data[12] >> 4) & 0x0F;
-        let flags = data[13];
-        let window_size = u16::from_be_bytes([data[14], data[15]]);
-        let checksum = u16::from_be_bytes([data[16], data[17]]);
-        let urgent_ptr = u16::from_be_bytes([data[18], data[19]]);
+        let src_port = u16::from_be_bytes([h[0], h[1]]);
+        let dst_port = u16::from_be_bytes([h[2], h[3]]);
+        let seq_num = u32::from_be_bytes([h[4], h[5], h[6], h[7]]);
+        let ack_num = u32::from_be_bytes([h[8], h[9], h[10], h[11]]);
+        let data_offset = (h[12] >> 4) & 0x0F;
+        let flags = h[13];
+        let window_size = u16::from_be_bytes([h[14], h[15]]);
+        let checksum = u16::from_be_bytes([h[16], h[17]]);
+        let urgent_ptr = u16::from_be_bytes([h[18], h[19]]);
 
         let header_len = (data_offset as usize) * 4;
-        if header_len < TCP_MIN_HEADER || data.len() < header_len {
-            return None;
-        }
-
-        let options = &data[TCP_MIN_HEADER..header_len];
-        let payload = &data[header_len..];
+        let options = data.get(TCP_MIN_HEADER..header_len)?;
+        let payload = data.get(header_len..)?;
 
         Some(TcpHeader {
             src_port,
@@ -122,34 +118,15 @@ pub fn tcp_checksum_v4(src_ip: &[u8; 4], dst_ip: &[u8; 4], tcp_segment: &[u8]) -
     if tcp_segment.len() < 2 {
         return 0;
     }
-    let mut sum: u32 = 0;
-
-    // Pseudo-header: src IP
-    sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
-    sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
-    // Pseudo-header: dst IP
-    sum += u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32;
-    sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
-    // Pseudo-header: protocol (TCP=6) and TCP length
-    sum += 6u32; // TCP protocol
-    sum += tcp_segment.len() as u32;
-
-    // TCP segment (with checksum field zeroed)
-    let mut i = 0;
-    while i < tcp_segment.len() - 1 {
-        let word = u16::from_be_bytes([tcp_segment[i], tcp_segment[i + 1]]);
-        sum += word as u32;
-        i += 2;
-    }
-    if tcp_segment.len() % 2 == 1 {
-        sum += (tcp_segment[tcp_segment.len() - 1] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !sum as u16
+    // Pseudo-header: addresses, protocol (TCP=6) and TCP length; then the
+    // segment, with its checksum field zeroed.
+    fold(
+        sum_words(src_ip)
+            + sum_words(dst_ip)
+            + 6
+            + tcp_segment.len() as u32
+            + sum_words(tcp_segment),
+    )
 }
 
 /// Compute TCP checksum (with IPv6 pseudo-header)
@@ -157,38 +134,17 @@ pub fn tcp_checksum_v6(src_ip: &[u8; 16], dst_ip: &[u8; 16], tcp_segment: &[u8])
     if tcp_segment.len() < 2 {
         return 0;
     }
-    let mut sum: u32 = 0;
-
-    // Pseudo-header: src IPv6 (16 bytes)
-    for i in (0..16).step_by(2) {
-        sum += u16::from_be_bytes([src_ip[i], src_ip[i + 1]]) as u32;
-    }
-    // Pseudo-header: dst IPv6 (16 bytes)
-    for i in (0..16).step_by(2) {
-        sum += u16::from_be_bytes([dst_ip[i], dst_ip[i + 1]]) as u32;
-    }
-    // Pseudo-header: TCP length (32-bit) and next header (TCP=6)
+    // Pseudo-header: addresses, 32-bit TCP length and next header (TCP=6);
+    // then the segment, with its checksum field zeroed by the caller.
     let tcp_len = tcp_segment.len() as u32;
-    sum += tcp_len >> 16;
-    sum += tcp_len & 0xFFFF;
-    sum += 6u32; // Next header: TCP
-
-    // TCP segment (with checksum field zeroed by caller)
-    let mut i = 0;
-    while i < tcp_segment.len() - 1 {
-        let word = u16::from_be_bytes([tcp_segment[i], tcp_segment[i + 1]]);
-        sum += word as u32;
-        i += 2;
-    }
-    if tcp_segment.len() % 2 == 1 {
-        sum += (tcp_segment[tcp_segment.len() - 1] as u32) << 8;
-    }
-
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !sum as u16
+    fold(
+        sum_words(src_ip)
+            + sum_words(dst_ip)
+            + (tcp_len >> 16)
+            + (tcp_len & 0xFFFF)
+            + 6
+            + sum_words(tcp_segment),
+    )
 }
 
 /// Build a TCP header from scratch
@@ -219,11 +175,37 @@ pub fn build_tcp_header(
     segment
 }
 
+/// A segment cut from `raw_packet`: its IP and TCP headers, options included,
+/// carrying `payload` at sequence number `seq`, with lengths and checksums
+/// made to match. Every other header field, the IP ID and TTL among them, is
+/// the original's; callers that need them different set them afterwards.
+///
+/// None if `raw_packet` is shorter than the headers it is said to hold, or
+/// the result would not fit an IP length field.
+pub fn resegment(
+    raw_packet: &[u8],
+    ip_hdr_len: usize,
+    tcp_hdr_len: usize,
+    payload: &[u8],
+    seq: u32,
+) -> Option<Vec<u8>> {
+    let headers = raw_packet.get(..ip_hdr_len.checked_add(tcp_hdr_len)?)?;
+    let mut packet = Vec::with_capacity(headers.len() + payload.len());
+    packet.extend_from_slice(headers);
+    packet.extend_from_slice(payload);
+
+    super::ip::set_ip_lengths(&mut packet, ip_hdr_len)?;
+    super::bytes::put_be32(&mut packet, ip_hdr_len + 4, seq)?;
+    if u8_at(&packet, 0)? >> 4 == 4 {
+        super::ip::refresh_ipv4_checksum(&mut packet)?;
+    }
+    try_refresh_tcp_checksum(&mut packet, ip_hdr_len)?;
+    Some(packet)
+}
+
 /// Set the TCP checksum field in a TCP segment (must include pseudo-header contribution)
 pub fn set_tcp_checksum(segment: &mut [u8], checksum: u16) {
-    if segment.len() >= 18 {
-        segment[16..18].copy_from_slice(&checksum.to_be_bytes());
-    }
+    let _ = put_be16(segment, 16, checksum);
 }
 
 /// Modify the window size in a raw packet (IP + TCP) and refresh the TCP
@@ -234,12 +216,15 @@ pub fn set_tcp_checksum(segment: &mut [u8], checksum: u16) {
 /// over, and a packet given back modified goes out as it is: a stale checksum
 /// would make the server drop every SYN.
 pub fn modify_window_size(packet: &mut [u8], ip_header_len: usize, new_window: u16) {
-    let tcp_offset = ip_header_len;
-    if packet.len() < tcp_offset + 18 {
+    let Some(window_at) = ip_header_len.checked_add(14) else {
+        return;
+    };
+    if packet.len() < window_at + 4 {
         return;
     }
-    packet[tcp_offset + 14..tcp_offset + 16].copy_from_slice(&new_window.to_be_bytes());
-    refresh_tcp_checksum(packet, ip_header_len);
+    if put_be16(packet, window_at, new_window).is_some() {
+        refresh_tcp_checksum(packet, ip_header_len);
+    }
 }
 
 /// Recompute the TCP checksum of a whole IPv4 or IPv6 packet in place.
@@ -247,26 +232,28 @@ pub fn modify_window_size(packet: &mut [u8], ip_header_len: usize, new_window: u
 /// Leaves the packet untouched when it is too short to hold the addresses and
 /// the checksum field, or its IP version is neither 4 nor 6.
 pub fn refresh_tcp_checksum(packet: &mut [u8], ip_header_len: usize) {
-    let tcp_offset = ip_header_len;
-    if packet.len() < tcp_offset + 18 {
-        return;
+    let _ = try_refresh_tcp_checksum(packet, ip_header_len);
+}
+
+fn try_refresh_tcp_checksum(packet: &mut [u8], tcp_offset: usize) -> Option<()> {
+    let checksum_at = tcp_offset.checked_add(16)?;
+    if packet.len() < checksum_at + 2 {
+        return None;
     }
-    let checksum = match packet[0] >> 4 {
+    let checksum = match u8_at(packet, 0)? >> 4 {
         4 if tcp_offset >= 20 => {
-            let (Ok(src), Ok(dst)) = (packet[12..16].try_into(), packet[16..20].try_into()) else {
-                return;
-            };
-            packet[tcp_offset + 16..tcp_offset + 18].fill(0);
-            tcp_checksum_v4(&src, &dst, &packet[tcp_offset..])
+            let src: [u8; 4] = array_at(packet, 12)?;
+            let dst: [u8; 4] = array_at(packet, 16)?;
+            put_be16(packet, checksum_at, 0)?;
+            tcp_checksum_v4(&src, &dst, packet.get(tcp_offset..)?)
         }
         6 if tcp_offset >= 40 => {
-            let (Ok(src), Ok(dst)) = (packet[8..24].try_into(), packet[24..40].try_into()) else {
-                return;
-            };
-            packet[tcp_offset + 16..tcp_offset + 18].fill(0);
-            tcp_checksum_v6(&src, &dst, &packet[tcp_offset..])
+            let src: [u8; 16] = array_at(packet, 8)?;
+            let dst: [u8; 16] = array_at(packet, 24)?;
+            put_be16(packet, checksum_at, 0)?;
+            tcp_checksum_v6(&src, &dst, packet.get(tcp_offset..)?)
         }
-        _ => return,
+        _ => return None,
     };
-    packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&checksum.to_be_bytes());
+    put_be16(packet, checksum_at, checksum)
 }

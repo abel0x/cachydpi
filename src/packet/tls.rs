@@ -5,6 +5,8 @@
 // Parses TLS ClientHello messages to extract the SNI (Server Name Indication)
 // extension, which is the primary target for HTTPS DPI bypass.
 
+use super::bytes::{array_at, be16_at, slice_at, u8_at};
+
 /// TLS content type: Handshake
 const TLS_HANDSHAKE: u8 = 0x16;
 /// TLS handshake type: ClientHello
@@ -71,35 +73,40 @@ pub fn continue_extension_walk(data: &[u8], resume: ExtensionResume) -> Continua
         if remaining < 4 {
             return Continuation::Exhausted;
         }
-        if pos + 4 > data.len() {
+        if pos.saturating_add(4) > data.len() {
             return Continuation::Resume(ExtensionResume {
                 next: pos,
                 remaining,
             });
         }
-        let ext_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
-        let ext_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+        let (Some(ext_type), Some(ext_len)) = (be16_at(data, pos), be16_at(data, pos + 2)) else {
+            return Continuation::Exhausted;
+        };
+        let ext_len = ext_len as usize;
         if 4 + ext_len > remaining {
             return Continuation::Exhausted;
         }
         if ext_type == TLS_EXT_SNI {
             // list length (2), name type (1), name length (2), name
             let body = pos + 4;
-            if ext_len < 5 || body + 5 > data.len() || data[body + 2] != 0 {
+            let Some([_, _, name_type, l0, l1]) = array_at::<5>(data, body) else {
+                return Continuation::Exhausted;
+            };
+            if ext_len < 5 || name_type != 0 {
                 return Continuation::Exhausted;
             }
-            let length = u16::from_be_bytes([data[body + 3], data[body + 4]]) as usize;
+            let length = u16::from_be_bytes([l0, l1]) as usize;
             let offset = body + 5;
-            if 5 + length > ext_len || offset + length > data.len() {
+            if 5 + length > ext_len {
                 return Continuation::Exhausted;
             }
-            return match std::str::from_utf8(&data[offset..offset + length]) {
-                Ok(name) => Continuation::Sni {
+            return match slice_at(data, offset, length).map(std::str::from_utf8) {
+                Some(Ok(name)) => Continuation::Sni {
                     offset,
                     length,
                     name: name.to_lowercase(),
                 },
-                Err(_) => Continuation::Exhausted,
+                _ => Continuation::Exhausted,
             };
         }
         pos += 4 + ext_len;
@@ -113,42 +120,34 @@ impl<'a> TlsClientHello<'a> {
     pub fn parse(data: &'a [u8]) -> Option<Self> {
         // Minimum TLS record header: 5 bytes
         // Content type (1) + Version (2) + Length (2)
-        if data.len() < 5 {
-            return None;
-        }
+        let [content_type, _, _, l0, l1] = array_at::<5>(data, 0)?;
 
         // Check content type is Handshake
-        if data[0] != TLS_HANDSHAKE {
+        if content_type != TLS_HANDSHAKE {
             return None;
         }
 
-        let _record_version = u16::from_be_bytes([data[1], data[2]]);
-        let record_length = u16::from_be_bytes([data[3], data[4]]) as usize;
+        let record_length = u16::from_be_bytes([l0, l1]) as usize;
 
         // Allow partial records: when the OS splits a TLS ClientHello across
         // multiple TCP segments, the first segment contains the TLS record
         // header but not the full record. We parse with what we have.
         let available = data.len().min(5 + record_length);
 
-        let record = &data[..available];
-        let handshake = &data[5..available];
+        let record = data.get(..available)?;
+        let handshake = data.get(5..available)?;
 
         // Handshake header: type (1) + length (3)
-        if handshake.is_empty() || handshake[0] != TLS_CLIENT_HELLO {
+        if u8_at(handshake, 0) != Some(TLS_CLIENT_HELLO) {
             return None;
         }
 
-        if handshake.len() < 4 {
-            return None;
-        }
-
-        let hs_length = ((handshake[1] as usize) << 16)
-            | ((handshake[2] as usize) << 8)
-            | (handshake[3] as usize);
+        let [_, h1, h2, h3] = array_at::<4>(handshake, 0)?;
+        let hs_length = ((h1 as usize) << 16) | ((h2 as usize) << 8) | (h3 as usize);
 
         // Allow partial handshake data (TCP segmentation)
         let hs_available = handshake.len().min(4 + hs_length);
-        let hello = &handshake[4..hs_available];
+        let hello = handshake.get(4..hs_available)?;
 
         // ClientHello structure:
         // Version (2) + Random (32) + Session ID length (1) + Session ID (var)
@@ -160,41 +159,32 @@ impl<'a> TlsClientHello<'a> {
             return None;
         }
 
-        let client_version = u16::from_be_bytes([hello[0], hello[1]]);
+        let client_version = be16_at(hello, 0)?;
         let mut pos = 2 + 32; // Skip version + random
 
         // Session ID
-        if pos >= hello.len() {
-            return None;
-        }
-        let session_id_len = hello[pos] as usize;
+        let session_id_len = u8_at(hello, pos)? as usize;
         pos += 1 + session_id_len;
         if pos > hello.len() {
             return None;
         }
 
         // Cipher suites
-        if pos + 2 > hello.len() {
-            return None;
-        }
-        let cipher_suites_len = u16::from_be_bytes([hello[pos], hello[pos + 1]]) as usize;
+        let cipher_suites_len = be16_at(hello, pos)? as usize;
         pos += 2 + cipher_suites_len;
         if pos > hello.len() {
             return None;
         }
 
         // Compression methods
-        if pos >= hello.len() {
-            return None;
-        }
-        let comp_methods_len = hello[pos] as usize;
+        let comp_methods_len = u8_at(hello, pos)? as usize;
         pos += 1 + comp_methods_len;
         if pos > hello.len() {
             return None;
         }
 
         // Extensions
-        if pos + 2 > hello.len() {
+        let Some(extensions_len) = be16_at(hello, pos) else {
             return Some(TlsClientHello {
                 record,
                 sni: None,
@@ -203,9 +193,8 @@ impl<'a> TlsClientHello<'a> {
                 version: client_version,
                 resume: None,
             });
-        }
-
-        let extensions_len = u16::from_be_bytes([hello[pos], hello[pos + 1]]) as usize;
+        };
+        let extensions_len = extensions_len as usize;
         pos += 2;
 
         // Allow partial extensions (TCP may have split the record)
@@ -222,8 +211,12 @@ impl<'a> TlsClientHello<'a> {
 
         let mut ext_pos = pos;
         while ext_pos + 4 <= extensions_end {
-            let ext_type = u16::from_be_bytes([hello[ext_pos], hello[ext_pos + 1]]);
-            let ext_len = u16::from_be_bytes([hello[ext_pos + 2], hello[ext_pos + 3]]) as usize;
+            let (Some(ext_type), Some(ext_len)) =
+                (be16_at(hello, ext_pos), be16_at(hello, ext_pos + 2))
+            else {
+                break;
+            };
+            let ext_len = ext_len as usize;
             ext_pos += 4;
 
             if ext_pos + ext_len > extensions_end {
@@ -245,22 +238,20 @@ impl<'a> TlsClientHello<'a> {
                 // Server name type (1, 0 = hostname)
                 // Server name length (2)
                 // Server name (var)
-                if ext_len >= 5 {
-                    let sni_data = &hello[ext_pos..ext_pos + ext_len];
-                    let _list_len = u16::from_be_bytes([sni_data[0], sni_data[1]]) as usize;
-                    let name_type = sni_data[2];
-                    let name_len = u16::from_be_bytes([sni_data[3], sni_data[4]]) as usize;
+                let sni_data = slice_at(hello, ext_pos, ext_len).unwrap_or_default();
+                if let Some([_, _, name_type, n0, n1]) = array_at::<5>(sni_data, 0) {
+                    let name_len = u16::from_be_bytes([n0, n1]) as usize;
 
-                    if name_type == 0 && sni_data.len() >= 5 + name_len {
-                        let name_bytes = &sni_data[5..5 + name_len];
-                        if let Ok(name) = std::str::from_utf8(name_bytes) {
-                            // Calculate absolute offset in the TCP payload
-                            // 5 (TLS record header) + 4 (handshake header) + offset within hello
-                            let abs_offset = 5 + 4 + ext_pos + 5;
-                            sni = Some(name.to_lowercase());
-                            sni_offset = Some(abs_offset);
-                            sni_length = Some(name_len);
-                        }
+                    if name_type == 0
+                        && let Some(name_bytes) = slice_at(sni_data, 5, name_len)
+                        && let Ok(name) = std::str::from_utf8(name_bytes)
+                    {
+                        // Calculate absolute offset in the TCP payload
+                        // 5 (TLS record header) + 4 (handshake header) + offset within hello
+                        let abs_offset = 5 + 4 + ext_pos + 5;
+                        sni = Some(name.to_lowercase());
+                        sni_offset = Some(abs_offset);
+                        sni_length = Some(name_len);
                     }
                 }
                 break;
@@ -462,10 +453,7 @@ pub fn build_client_hello(domain: &str) -> Vec<u8> {
 
 /// Check if a TCP payload starts with a TLS ClientHello
 pub fn is_tls_client_hello(data: &[u8]) -> bool {
-    if data.len() < 6 {
-        return false;
-    }
-    data[0] == TLS_HANDSHAKE && data[5] == TLS_CLIENT_HELLO
+    u8_at(data, 0) == Some(TLS_HANDSHAKE) && u8_at(data, 5) == Some(TLS_CLIENT_HELLO)
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@
 // Note: IP fragmentation only works with IPv4. IPv6 does not allow
 // intermediate fragmentation (only the sender can fragment).
 
+use crate::packet::bytes::{put_be16, u8_at};
 use crate::packet::ip::{self, IpHeader};
 use crate::packet::udp::UdpHeader;
 
@@ -52,7 +53,7 @@ pub fn desync_quic_initial(
     }
 
     let ip_hdr_len = ip_hdr.header_len();
-    let transport_payload = &raw_packet[ip_hdr_len..]; // UDP header + UDP payload
+    let transport_payload = raw_packet.get(ip_hdr_len..)?; // UDP header + UDP payload
 
     // Split point: must be at 8-byte boundary (IP fragmentation requirement)
     // Include the full UDP header (8 bytes) + enough QUIC header to split before SNI
@@ -73,8 +74,7 @@ pub fn desync_quic_initial(
     );
 
     let identification = ip_hdr.identification();
-    let first_data = &transport_payload[..frag_boundary];
-    let second_data = &transport_payload[frag_boundary..];
+    let (first_data, second_data) = transport_payload.split_at_checked(frag_boundary)?;
 
     // Fragment 1: IP header (MF=1, offset=0) + first part of transport data
     let frag1 = build_ipv4_fragment(
@@ -84,7 +84,7 @@ pub fn desync_quic_initial(
         identification,
         0,    // fragment offset = 0
         true, // More Fragments = true
-    );
+    )?;
 
     // Fragment 2: IP header (MF=0, offset=frag_boundary/8) + rest of transport data
     let frag2 = build_ipv4_fragment(
@@ -94,7 +94,7 @@ pub fn desync_quic_initial(
         identification,
         (frag_boundary / 8) as u16, // fragment offset in 8-byte units
         false,                      // More Fragments = false (last fragment)
-    );
+    )?;
 
     Some(vec![frag1, frag2])
 }
@@ -112,31 +112,26 @@ fn find_quic_split_point(data: &[u8]) -> Option<usize> {
     // Byte 0: Header form (1) + Fixed bit (1) + Long Packet Type (2) + Reserved (2) + Packet Number Length (2)
     // Bytes 1-4: Version
     // Byte 5: DCID Length
-    let dcid_len = data[5] as usize;
+    let dcid_len = u8_at(data, 5)? as usize;
     let mut pos = 6 + dcid_len;
 
-    if pos >= data.len() {
-        return None;
-    }
-
     // SCID Length
-    let scid_len = data[pos] as usize;
+    let scid_len = u8_at(data, pos)? as usize;
     pos += 1 + scid_len;
 
-    if pos >= data.len() {
-        return None;
-    }
+    // Token Length (variable-length integer). A peer-supplied length: add it
+    // checked, so a huge one ends the parse rather than wrapping.
+    let (token_len, token_len_size) = decode_quic_varint(data.get(pos..)?)?;
+    pos = pos
+        .checked_add(token_len_size)?
+        .checked_add(usize::try_from(token_len).ok()?)?;
 
-    // Token Length (variable-length integer)
-    let (token_len, token_len_size) = decode_quic_varint(&data[pos..])?;
-    pos += token_len_size + token_len as usize;
-
-    if pos + 2 > data.len() {
+    if pos.checked_add(2)? > data.len() {
         return None;
     }
 
     // Payload Length (variable-length integer)
-    let (_payload_len, payload_len_size) = decode_quic_varint(&data[pos..])?;
+    let (_payload_len, payload_len_size) = decode_quic_varint(data.get(pos..)?)?;
     pos += payload_len_size;
 
     // pos now points to the start of the encrypted payload
@@ -158,46 +153,15 @@ fn find_quic_split_point(data: &[u8]) -> Option<usize> {
 
 /// Decode a QUIC variable-length integer (RFC 9000 Section 16)
 fn decode_quic_varint(data: &[u8]) -> Option<(u64, usize)> {
-    if data.is_empty() {
-        return None;
-    }
-
-    let prefix = data[0] >> 6;
-    match prefix {
-        0 => Some((data[0] as u64 & 0x3F, 1)),
-        1 => {
-            if data.len() < 2 {
-                return None;
-            }
-            let val = ((data[0] as u64 & 0x3F) << 8) | data[1] as u64;
-            Some((val, 2))
-        }
-        2 => {
-            if data.len() < 4 {
-                return None;
-            }
-            let val = ((data[0] as u64 & 0x3F) << 24)
-                | ((data[1] as u64) << 16)
-                | ((data[2] as u64) << 8)
-                | data[3] as u64;
-            Some((val, 4))
-        }
-        3 => {
-            if data.len() < 8 {
-                return None;
-            }
-            let val = ((data[0] as u64 & 0x3F) << 56)
-                | ((data[1] as u64) << 48)
-                | ((data[2] as u64) << 40)
-                | ((data[3] as u64) << 32)
-                | ((data[4] as u64) << 24)
-                | ((data[5] as u64) << 16)
-                | ((data[6] as u64) << 8)
-                | data[7] as u64;
-            Some((val, 8))
-        }
-        _ => None,
-    }
+    // The top two bits of the first byte give the length: 1, 2, 4 or 8
+    // bytes. The remaining six start the value, big-endian.
+    let first = *data.first()?;
+    let len = 1usize << (first >> 6);
+    let rest = data.get(1..len)?;
+    let value = rest
+        .iter()
+        .fold(first as u64 & 0x3F, |acc, &b| (acc << 8) | b as u64);
+    Some((value, len))
 }
 
 /// Build an IPv4 fragment from the original packet's IP header
@@ -208,20 +172,19 @@ fn build_ipv4_fragment(
     identification: u16,
     frag_offset: u16,
     more_fragments: bool,
-) -> Vec<u8> {
-    let total_len = ip_hdr_len + fragment_data.len();
-    let mut packet = Vec::with_capacity(total_len);
+) -> Option<Vec<u8>> {
+    let mut packet = Vec::with_capacity(ip_hdr_len + fragment_data.len());
 
     // Copy original IP header
-    packet.extend_from_slice(&original_packet[..ip_hdr_len]);
+    packet.extend_from_slice(original_packet.get(..ip_hdr_len)?);
     // Append fragment payload
     packet.extend_from_slice(fragment_data);
 
     // Fix IP total length
-    packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+    ip::set_ip_lengths(&mut packet, ip_hdr_len)?;
 
     // Set identification field
-    packet[4..6].copy_from_slice(&identification.to_be_bytes());
+    put_be16(&mut packet, 4, identification)?;
 
     // Set flags + fragment offset
     // Bits: [0]=Reserved, [1]=Don't Fragment, [2]=More Fragments
@@ -231,13 +194,10 @@ fn build_ipv4_fragment(
         flags_frag |= 0x2000; // MF flag
     }
     // Clear DF flag (we need fragmentation)
-    packet[6..8].copy_from_slice(&flags_frag.to_be_bytes());
+    put_be16(&mut packet, 6, flags_frag)?;
 
     // Recalculate IP checksum
-    packet[10] = 0;
-    packet[11] = 0;
-    let cksum = ip::ipv4_checksum(&packet[..ip_hdr_len]);
-    packet[10..12].copy_from_slice(&cksum.to_be_bytes());
+    ip::refresh_ipv4_checksum(&mut packet)?;
 
-    packet
+    Some(packet)
 }
