@@ -5,7 +5,7 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.11.0] — 2026-11-16
 
 ### Added
 
@@ -39,7 +39,6 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   code as the `detect` probe, with its random, session id and key share
   fresh for every hello. The fake HTTP request now carries a browser's
   headers instead of only a request line and Host.
-
 - The wrong-checksum fake (`fake_wrong_checksum`) always carried the TCP
   checksum `0xDEAD`, and the wrong-SEQ fake (`fake_wrong_seq`) always started
   exactly 100000 bytes behind the real data: two constants a DPI could match

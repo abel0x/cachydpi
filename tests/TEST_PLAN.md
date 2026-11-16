@@ -1,6 +1,6 @@
 # CachyDPI — Real-World Validation Test Plan
 
-**Target:** CachyDPI 1.10.x  
+**Target:** CachyDPI 1.11.x  
 **Date:** 2026-04-09 (written for v1.0.0), revised 2026-11-16  
 **Scope:** Complete behavioral validation under real and hostile conditions
 
