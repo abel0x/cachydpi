@@ -487,6 +487,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 3. Switch to `fake_wrong_seq = true` (or `--wrong-seq`), retry
 4. Switch to wrong TTL, retry
 5. Record which fake strategies succeed
+6. If they all fail, set `fake_sni` to a name on the same CDN as the blocked site and repeat
 
 **Expected Result:**
 - At least one fake strategy should work (DPI can't verify all three simultaneously)
@@ -495,8 +496,9 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 - wrong TTL: most reliable (DPI processes, server never receives)
 
 **Failure Indicators:**
-- All three fail → DPI is extremely sophisticated (state-tracking + checksum verification)
+- All three fail → DPI is extremely sophisticated (state-tracking + checksum verification), or it compares the fake SNI with the destination address
 - wrong TTL fails → fake_ttl too high (reaching server) or too low (not reaching DPI)
+- A fake whose ClientHello is not browser-shaped, or whose checksum or SEQ offset repeats between connections → a constant a DPI could match on
 
 ---
 
@@ -755,6 +757,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 
 **Setup:**
 - Known ISP with known DPI behavior
+- The probe connects straight to the site from this machine's address with the name in the clear: the ISP can log that this address tried to reach it
 
 **Steps:**
 1. `sudo cachydpi detect www.youtube.com`
@@ -762,10 +765,12 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 3. Compare results
 
 **Expected Result:**
-- youtube.com: DPI detected (RST and/or redirect injection), recommended mode ≥ 3
-- google.com: No DPI detected, recommended mode 1
+- A warning that the probe is visible on the network is printed before the first connection; with unencrypted DNS it adds that the lookup reveals the name
+- youtube.com: verdict names the interference (reset, cut off or dropped when the name was sent), recommended mode 7
+- google.com: "not blocked by name", recommended mode 5
 
 **Failure Indicators:**
+- Probe starts without the warning
 - False positive on google.com (DPI detected where none exists)
 - False negative on youtube.com (DPI not detected but site is blocked)
 - Timeout (connect_timeout 5s) on every attempt → firewall rules blocking test traffic
