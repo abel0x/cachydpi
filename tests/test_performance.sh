@@ -12,6 +12,15 @@
 set -euo pipefail
 
 SERVICE="cachydpi.service"
+
+# The unit allows five starts a minute (StartLimitBurst=5 in sixty seconds),
+# and these tests stop and start it more often than that on purpose. Past the
+# limit systemd refuses the start ("start-limit-hit") and every later test
+# finds no service to test, so clear the counter before each start.
+start_service() {
+    systemctl reset-failed "$SERVICE" 2>/dev/null || true
+    systemctl start "$SERVICE"
+}
 REPORT_DIR="tests/reports"
 REPORT="$REPORT_DIR/performance_report.txt"
 CACHYDPI_BIN="/usr/bin/cachydpi"
@@ -42,7 +51,7 @@ sleep 1
 echo "" >> "$REPORT"
 echo "--- Test 1: Idle resource consumption ---" >> "$REPORT"
 
-systemctl start "$SERVICE" 2>/dev/null || true
+start_service 2>/dev/null || true
 sleep 3
 
 if systemctl is-active "$SERVICE" &>/dev/null; then
@@ -250,7 +259,7 @@ systemctl stop "$SERVICE" 2>/dev/null || true
 sleep 1
 
 START_TIME=$(date +%s%N)
-systemctl start "$SERVICE" 2>/dev/null || true
+start_service 2>/dev/null || true
 
 # Wait until active
 for i in $(seq 1 30); do

@@ -12,6 +12,15 @@
 set -euo pipefail
 
 SERVICE="cachydpi.service"
+
+# The unit allows five starts a minute (StartLimitBurst=5 in sixty seconds),
+# and these tests stop and start it more often than that on purpose. Past the
+# limit systemd refuses the start ("start-limit-hit") and every later test
+# finds no service to test, so clear the counter before each start.
+start_service() {
+    systemctl reset-failed "$SERVICE" 2>/dev/null || true
+    systemctl start "$SERVICE"
+}
 REPORT_DIR="tests/reports"
 REPORT="$REPORT_DIR/crash_safety_report.txt"
 
@@ -46,7 +55,7 @@ echo "" >> "$REPORT"
 echo "--- Test 1: SIGTERM clean shutdown ---" >> "$REPORT"
 ensure_service_stopped
 if check_nftables_clean; then
-    systemctl start "$SERVICE" 2>/dev/null
+    start_service 2>/dev/null
     sleep 2
     if systemctl is-active "$SERVICE" &>/dev/null; then
         # Verify nftables rules exist
@@ -86,7 +95,7 @@ nft delete table ip cachydpi 2>/dev/null || true
 nft delete table ip6 cachydpi 2>/dev/null || true
 sleep 1
 
-systemctl start "$SERVICE" 2>/dev/null
+start_service 2>/dev/null
 sleep 2
 
 if systemctl is-active "$SERVICE" &>/dev/null; then
@@ -107,7 +116,7 @@ if systemctl is-active "$SERVICE" &>/dev/null; then
         sleep 1
         nft delete table ip cachydpi 2>/dev/null || true
         nft delete table ip6 cachydpi 2>/dev/null || true
-        systemctl start "$SERVICE" 2>/dev/null
+        start_service 2>/dev/null
         sleep 2
 
         if systemctl is-active "$SERVICE" &>/dev/null; then
@@ -135,7 +144,7 @@ ensure_service_stopped
 nft delete table ip cachydpi 2>/dev/null || true
 nft delete table ip6 cachydpi 2>/dev/null || true
 
-systemctl start "$SERVICE" 2>/dev/null
+start_service 2>/dev/null
 sleep 2
 
 if systemctl is-active "$SERVICE" &>/dev/null; then
@@ -165,7 +174,7 @@ cycles_ok=0
 cycles_fail=0
 
 for i in $(seq 1 5); do
-    systemctl start "$SERVICE" 2>/dev/null || true
+    start_service 2>/dev/null || true
     sleep 1
     systemctl stop "$SERVICE" 2>/dev/null || true
     sleep 1

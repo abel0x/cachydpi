@@ -12,6 +12,15 @@ set -euo pipefail
 
 BINARY="/usr/bin/cachydpi"
 SERVICE="cachydpi.service"
+
+# The unit allows five starts a minute (StartLimitBurst=5 in sixty seconds),
+# and these tests stop and start it more often than that on purpose. Past the
+# limit systemd refuses the start ("start-limit-hit") and every later test
+# finds no service to test, so clear the counter before each start.
+start_service() {
+    systemctl reset-failed "$SERVICE" 2>/dev/null || true
+    systemctl start "$SERVICE"
+}
 REPORT_DIR="tests/reports"
 REPORT="$REPORT_DIR/privilege_escalation_report.txt"
 
@@ -126,7 +135,7 @@ for _i in $(seq 1 30); do
     systemctl is-active "$SERVICE" &>/dev/null || break
     sleep 0.2
 done
-systemctl start "$SERVICE" 2>/dev/null || true
+start_service 2>/dev/null || true
 # Poll for active
 for _i in $(seq 1 30); do
     systemctl is-active "$SERVICE" &>/dev/null && break
@@ -161,11 +170,14 @@ if systemctl is-active "$SERVICE" &>/dev/null; then
             decoded=$(capsh --decode="$cap_eff" 2>/dev/null || echo "decode failed")
             echo "  Effective caps decoded: $decoded" >> "$REPORT"
 
-            # Check only NET_ADMIN and NET_RAW are present
-            if echo "$decoded" | grep -q "cap_net_admin" && echo "$decoded" | grep -q "cap_net_raw"; then
-                pass "Process has NET_ADMIN and NET_RAW capabilities"
+            # NET_ADMIN stays for teardown's nft; NET_RAW is needed only to
+            # open the raw sockets and is given up after (src/privileges.rs).
+            if ! echo "$decoded" | grep -q "cap_net_admin"; then
+                fail "Process missing CAP_NET_ADMIN: $decoded"
+            elif echo "$decoded" | grep -q "cap_net_raw"; then
+                fail "Process still holds CAP_NET_RAW after startup: $decoded"
             else
-                fail "Process missing required capabilities: $decoded"
+                pass "Process keeps only CAP_NET_ADMIN; CAP_NET_RAW was given up"
             fi
 
             # Check dangerous caps are NOT present

@@ -12,6 +12,15 @@
 set -euo pipefail
 
 SERVICE="cachydpi.service"
+
+# The unit allows five starts a minute (StartLimitBurst=5 in sixty seconds),
+# and these tests stop and start it more often than that on purpose. Past the
+# limit systemd refuses the start ("start-limit-hit") and every later test
+# finds no service to test, so clear the counter before each start.
+start_service() {
+    systemctl reset-failed "$SERVICE" 2>/dev/null || true
+    systemctl start "$SERVICE"
+}
 REPORT_DIR="tests/reports"
 REPORT="$REPORT_DIR/isp_bypass_report.txt"
 
@@ -50,7 +59,7 @@ echo "--- Pre-check: Service Status ---" >> "$REPORT"
 
 if ! systemctl is-active "$SERVICE" &>/dev/null; then
     echo "  Starting $SERVICE..." >> "$REPORT"
-    systemctl start "$SERVICE" 2>/dev/null || true
+    start_service 2>/dev/null || true
     sleep 2
 fi
 
@@ -141,7 +150,7 @@ for domain in "${TEST_DOMAINS_TLS[@]}"; do
 done
 
 # Restart service
-systemctl start "$SERVICE" 2>/dev/null || true
+start_service 2>/dev/null || true
 sleep 2
 
 # Compare
