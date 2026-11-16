@@ -52,13 +52,13 @@ if command -v cargo-audit &>/dev/null; then
     if echo "$AUDIT_OUTPUT" | grep -q "0 vulnerabilities found\|No vulnerable"; then
         pass "No known vulnerabilities found"
     elif echo "$AUDIT_OUTPUT" | grep -q "allowed warning"; then
-        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || echo "?")
+        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
         warn "cargo audit: $VULN_COUNT allowed advisory warning(s) from transitive deps (review periodically)"
     elif echo "$AUDIT_OUTPUT" | grep -qi "warning"; then
-        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || echo "?")
+        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
         warn "cargo audit has warnings: $VULN_COUNT advisory notices"
     else
-        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || echo "?")
+        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
         fail "Vulnerabilities found: $VULN_COUNT"
     fi
 else
@@ -69,13 +69,13 @@ else
         if echo "$AUDIT_OUTPUT" | grep -q "0 vulnerabilities found\|No vulnerable"; then
             pass "No known vulnerabilities found"
         elif echo "$AUDIT_OUTPUT" | grep -q "allowed warning"; then
-            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || echo "?")
+            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
             warn "cargo audit: $VULN_COUNT allowed advisory warning(s) from transitive deps (review periodically)"
         elif echo "$AUDIT_OUTPUT" | grep -qi "warning"; then
-            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || echo "?")
+            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
             warn "cargo audit has warnings: $VULN_COUNT advisory notices"
         else
-            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || echo "?")
+            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
             fail "Vulnerabilities found: $VULN_COUNT"
         fi
     else
@@ -87,21 +87,26 @@ fi
 echo "" >> "$REPORT"
 echo "--- Test 2: cargo clippy (lint analysis) ---" >> "$REPORT"
 
-CLIPPY_OUTPUT=$(cargo clippy -- -D warnings 2>&1 || true)
-CLIPPY_EXIT=$?
+# Judge by clippy's exit status. Searching its output for "error" also
+# matches crate names such as thiserror in the "Checking ..." lines.
+if CLIPPY_OUTPUT=$(cargo clippy -- -D warnings 2>&1); then
+    CLIPPY_EXIT=0
+else
+    CLIPPY_EXIT=$?
+fi
 
-# Count warnings and errors
-CLIPPY_WARNINGS=$(echo "$CLIPPY_OUTPUT" | grep -c "^warning\[" || echo "0")
-CLIPPY_ERRORS=$(echo "$CLIPPY_OUTPUT" | grep -c "^error" || echo "0")
+# Count diagnostics: lines that start with "error:"/"error[" or "warning:"/"warning["
+CLIPPY_WARNINGS=$(echo "$CLIPPY_OUTPUT" | grep -cE '^warning(\[|:)' || true)
+CLIPPY_ERRORS=$(echo "$CLIPPY_OUTPUT" | grep -cE '^error(\[|:)' || true)
 
 echo "  Warnings: $CLIPPY_WARNINGS" >> "$REPORT"
 echo "  Errors: $CLIPPY_ERRORS" >> "$REPORT"
 
-if echo "$CLIPPY_OUTPUT" | grep -q "error"; then
-    echo "$CLIPPY_OUTPUT" | grep "error" | head -10 | sed 's/^/    /' >> "$REPORT"
+if [[ $CLIPPY_EXIT -ne 0 ]]; then
+    echo "$CLIPPY_OUTPUT" | grep -E '^error(\[|:)' | head -10 | sed 's/^/    /' >> "$REPORT"
     fail "cargo clippy produced errors"
-elif echo "$CLIPPY_OUTPUT" | grep -q "warning\["; then
-    echo "$CLIPPY_OUTPUT" | grep "warning\[" | head -10 | sed 's/^/    /' >> "$REPORT"
+elif [[ $CLIPPY_WARNINGS -gt 0 ]]; then
+    echo "$CLIPPY_OUTPUT" | grep -E '^warning(\[|:)' | head -10 | sed 's/^/    /' >> "$REPORT"
     warn "cargo clippy produced warnings"
 else
     pass "cargo clippy clean (no warnings or errors)"
@@ -111,14 +116,21 @@ fi
 echo "" >> "$REPORT"
 echo "--- Test 3: cargo test ---" >> "$REPORT"
 
-TEST_OUTPUT=$(cargo test 2>&1 || true)
-TESTS_PASSED=$(echo "$TEST_OUTPUT" | grep -oP '\d+ passed' | head -1 || echo "? passed")
-TESTS_FAILED=$(echo "$TEST_OUTPUT" | grep -oP '\d+ failed' | head -1 || echo "0 failed")
+# Every test binary prints its own "test result:" line; one "ok" among them
+# says nothing about the others, so judge by cargo's exit status and add up
+# all the counts.
+if TEST_OUTPUT=$(cargo test 2>&1); then
+    TEST_EXIT=0
+else
+    TEST_EXIT=$?
+fi
+TESTS_PASSED=$(echo "$TEST_OUTPUT" | awk '/^test result:/ {n += $4} END {print n + 0}')
+TESTS_FAILED=$(echo "$TEST_OUTPUT" | awk '/^test result:/ {n += $6} END {print n + 0}')
 
-echo "  $TESTS_PASSED, $TESTS_FAILED" >> "$REPORT"
+echo "  $TESTS_PASSED passed, $TESTS_FAILED failed" >> "$REPORT"
 
-if echo "$TEST_OUTPUT" | grep -q "test result: ok"; then
-    pass "All cargo tests pass ($TESTS_PASSED)"
+if [[ $TEST_EXIT -eq 0 ]]; then
+    pass "All cargo tests pass ($TESTS_PASSED passed)"
 else
     echo "$TEST_OUTPUT" | grep "FAILED\|panicked" | head -10 | sed 's/^/    /' >> "$REPORT"
     fail "Some cargo tests failed: $TESTS_FAILED"
@@ -180,7 +192,7 @@ DUPES=$(cargo tree --duplicates 2>/dev/null || true)
 if [[ -z "$DUPES" ]]; then
     pass "No duplicate dependencies"
 else
-    DUPE_COUNT=$(echo "$DUPES" | grep -c "^[a-z]" || echo "?")
+    DUPE_COUNT=$(echo "$DUPES" | grep -c "^[a-z]" || true)
     echo "  Duplicate deps: $DUPE_COUNT" >> "$REPORT"
     echo "$DUPES" | head -10 | sed 's/^/    /' >> "$REPORT"
     warn "Found $DUPE_COUNT duplicate dependencies"
@@ -190,9 +202,13 @@ fi
 echo "" >> "$REPORT"
 echo "--- Test 6: Build with all features ---" >> "$REPORT"
 
-ALL_FEATURES_OUTPUT=$(cargo build --all-features 2>&1 || true)
-if echo "$ALL_FEATURES_OUTPUT" | grep -q "error\["; then
-    echo "$ALL_FEATURES_OUTPUT" | grep "error" | head -5 | sed 's/^/    /' >> "$REPORT"
+if ALL_FEATURES_OUTPUT=$(cargo build --all-features 2>&1); then
+    BUILD_EXIT=0
+else
+    BUILD_EXIT=$?
+fi
+if [[ $BUILD_EXIT -ne 0 ]]; then
+    echo "$ALL_FEATURES_OUTPUT" | grep -E '^error(\[|:)' | head -5 | sed 's/^/    /' >> "$REPORT"
     fail "Build with --all-features fails"
 else
     pass "Build with --all-features succeeds"
@@ -202,9 +218,13 @@ fi
 echo "" >> "$REPORT"
 echo "--- Test 7: Build with no default features ---" >> "$REPORT"
 
-NO_DEF_OUTPUT=$(cargo build --no-default-features 2>&1 || true)
-if echo "$NO_DEF_OUTPUT" | grep -q "error\["; then
-    echo "$NO_DEF_OUTPUT" | grep "error" | head -5 | sed 's/^/    /' >> "$REPORT"
+if NO_DEF_OUTPUT=$(cargo build --no-default-features 2>&1); then
+    BUILD_EXIT=0
+else
+    BUILD_EXIT=$?
+fi
+if [[ $BUILD_EXIT -ne 0 ]]; then
+    echo "$NO_DEF_OUTPUT" | grep -E '^error(\[|:)' | head -5 | sed 's/^/    /' >> "$REPORT"
     fail "Build with --no-default-features fails"
 else
     pass "Build with --no-default-features succeeds"
