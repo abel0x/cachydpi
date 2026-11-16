@@ -134,16 +134,22 @@ mod tests {
         for port in 0..u16::MAX {
             table.syn_ack_received(&key(port), ttl_for(port));
         }
-        // Eight flows per slot: most have been overwritten. Whatever a lookup
-        // returns must be the flow's own TTL or Unknown, never a neighbour's.
+        // Eight flows per slot: most have been overwritten. A lookup should
+        // return the flow's own TTL or Unknown. A neighbour's TTL gets through
+        // only when its tag matches, one time in 2^23 (the tag's low bit is
+        // forced), so the ~57k overwritten flows here expect 0.007 such reads.
+        // Allowing two keeps a seed-driven flake below one run in ten million,
+        // while a broken tag check would leak tens of thousands.
         let mut survived = 0;
+        let mut wrong = Vec::new();
         for port in 0..u16::MAX {
             match table.lookup(&key(port)) {
                 FlowTtl::Unknown => {}
                 FlowTtl::Server(t) if t == ttl_for(port) => survived += 1,
-                other => panic!("port {port} read {other:?}"),
+                other => wrong.push((port, other)),
             }
         }
+        assert!(wrong.len() <= 2, "neighbours' TTLs leaked: {wrong:?}");
         assert!(survived > 0 && survived <= SLOTS);
     }
 }
