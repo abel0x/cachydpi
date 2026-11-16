@@ -77,6 +77,11 @@ pub struct StrategyConfig {
     /// stops the fakes short of the DPI, so the error is on the safe side.
     /// Does not limit a fixed `fake_packet_ttl`.
     pub fake_ttl_max: u8,
+    /// Host named by fake packets: the SNI of the fake ClientHello and the
+    /// Host of the fake HTTP request. The DPI classifies the connection by it,
+    /// so it should be a name the DPI lets through; a name whose servers the
+    /// real destination could plausibly belong to is harder to tell apart.
+    pub fake_sni: String,
     /// Send fake packets with wrong TCP checksum
     pub fake_wrong_checksum: bool,
     /// Send fake packets with wrong TCP sequence number
@@ -201,6 +206,8 @@ impl Default for GeneralConfig {
 /// requests to unblocked sites.
 pub const DEFAULT_FAKE_TTL_MAX: u8 = 4;
 
+pub const DEFAULT_FAKE_SNI: &str = "www.google.com";
+
 impl Default for StrategyConfig {
     fn default() -> Self {
         StrategyConfig {
@@ -212,6 +219,7 @@ impl Default for StrategyConfig {
             fake_packet_ttl: 0,
             auto_ttl: true,
             fake_ttl_max: DEFAULT_FAKE_TTL_MAX,
+            fake_sni: DEFAULT_FAKE_SNI.to_string(),
             fake_wrong_checksum: false,
             fake_wrong_seq: false,
             quic_desync: false,
@@ -377,6 +385,12 @@ impl Config {
         if self.strategies.fake_ttl_max == 0 {
             anyhow::bail!(
                 "strategies.fake_ttl_max must be at least 1 — a fake with TTL 0 is never sent past this host"
+            );
+        }
+        if !crate::packet::tls::is_hostname_syntax(&self.strategies.fake_sni) {
+            anyhow::bail!(
+                "strategies.fake_sni must be a lowercase hostname such as \"{DEFAULT_FAKE_SNI}\" — \
+                 a DPI reads it as the name the connection goes to"
             );
         }
         Ok(())

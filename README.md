@@ -178,6 +178,8 @@ A fake packet has to live long enough to reach the DPI and die before it reaches
 
 `fake_ttl_max` (default **4**) caps every auto-detected value. If blocked sites stay blocked with fakes on, your DPI may sit further out: raise it one step at a time. If unblocked sites start failing, lower it. A fixed `fake_packet_ttl` is used as given and is not capped.
 
+The fakes themselves are a browser-shaped ClientHello, or an HTTP request with a browser's headers, naming `fake_sni` (default `www.google.com`). The DPI classifies the connection by that name, so it has to be one your ISP lets through. A DPI that compares it with the destination address can see that a Google name is going to a non-Google server; a name served from the same CDN as the sites you visit avoids that mismatch.
+
 > **Mode 6 warning.** Mode 6 can send out-of-order segments and (if `desync_first` is enabled) fake RST packets. On ISPs with aggressive DPI this can cause the DPI to treat the fake RST as a real close and drop the whole connection. Prefer mode 5 unless you have a specific reason.
 
 ## Field results
@@ -223,6 +225,7 @@ fake_packet_enabled = false  # decoy packets — off by default (can trigger agg
 fake_packet_ttl     = 0      # 0 = auto-detect from SYN-ACK
 auto_ttl            = true
 fake_ttl_max        = 4      # cap on auto-detected fake TTL — raise only if your DPI sits further out
+fake_sni            = "www.google.com"  # host the fake ClientHello / HTTP request names
 fake_wrong_checksum = false
 fake_wrong_seq      = false
 quic_desync         = false  # QUIC fragmentation on UDP 443 (IPv4 only)

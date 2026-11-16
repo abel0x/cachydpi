@@ -180,7 +180,7 @@ fn probe_tls(address: SocketAddr, sni: &str) -> (TlsOutcome, Duration) {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
 
     let sent = Instant::now();
-    if let Err(e) = stream.write_all(&build_test_client_hello(sni)) {
+    if let Err(e) = stream.write_all(&crate::packet::tls::build_client_hello(sni)) {
         return (classify(Err(e), sent.elapsed(), rtt), rtt);
     }
     let mut buf = [0u8; 1024];
@@ -234,75 +234,6 @@ fn looks_injected(response: &[u8], since_send: Duration, rtt: Duration) -> bool 
     .iter()
     .any(|w| lower.contains(w));
     (is_redirect && early) || block_page
-}
-
-/// A ClientHello carrying `domain` as SNI that real servers answer with a
-/// ServerHello: TLS 1.3 and 1.2 suites, supported_versions, and an X25519 key
-/// share. A bare hello offering no usable cipher draws only a seven-byte
-/// alert, which is easy to lose — passive defence before 1.3.0 dropped exactly
-/// that alert as forged — and is not what a DPI box sees from a browser.
-fn build_test_client_hello(domain: &str) -> Vec<u8> {
-    use std::hash::{BuildHasher, Hasher};
-    let mut noise = Vec::with_capacity(64);
-    let seed = std::collections::hash_map::RandomState::new();
-    for i in 0u8..8 {
-        let mut h = seed.build_hasher();
-        h.write_u8(i);
-        noise.extend_from_slice(&h.finish().to_be_bytes());
-    }
-
-    fn ext(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
-        out.extend_from_slice(&kind.to_be_bytes());
-        out.extend_from_slice(&(data.len() as u16).to_be_bytes());
-        out.extend_from_slice(data);
-    }
-
-    let name = domain.as_bytes();
-    let mut sni = ((name.len() + 3) as u16).to_be_bytes().to_vec();
-    sni.push(0);
-    sni.extend_from_slice(&(name.len() as u16).to_be_bytes());
-    sni.extend_from_slice(name);
-
-    let mut key_share = 36u16.to_be_bytes().to_vec(); // one entry: group, len, key
-    key_share.extend_from_slice(&[0x00, 0x1d, 0x00, 0x20]); // x25519, 32 bytes
-    key_share.extend_from_slice(&noise[32..64]);
-
-    let mut exts = Vec::new();
-    ext(&mut exts, 0x0000, &sni);
-    ext(
-        &mut exts,
-        0x000a,
-        &[0x00, 0x06, 0x00, 0x1d, 0x00, 0x17, 0x00, 0x18],
-    ); // groups
-    ext(&mut exts, 0x000b, &[0x01, 0x00]); // ec_point_formats: uncompressed
-    ext(
-        &mut exts,
-        0x000d, // signature_algorithms
-        &[0x00, 0x08, 0x04, 0x03, 0x08, 0x04, 0x04, 0x01, 0x05, 0x01],
-    );
-    ext(&mut exts, 0x0010, &[0x00, 0x03, 0x02, b'h', b'2']); // ALPN h2
-    ext(&mut exts, 0x002b, &[0x04, 0x03, 0x04, 0x03, 0x03]); // versions 1.3, 1.2
-    ext(&mut exts, 0x0033, &key_share);
-
-    let suites: [u16; 6] = [0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc030];
-    let mut body = vec![0x03, 0x03];
-    body.extend_from_slice(&noise[..32]);
-    body.push(0); // no session id
-    body.extend_from_slice(&((suites.len() * 2) as u16).to_be_bytes());
-    for s in suites {
-        body.extend_from_slice(&s.to_be_bytes());
-    }
-    body.extend_from_slice(&[0x01, 0x00]);
-    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
-    body.extend_from_slice(&exts);
-
-    let mut hello = vec![0x01];
-    hello.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
-    hello.extend_from_slice(&body);
-    let mut record = vec![0x16, 0x03, 0x01];
-    record.extend_from_slice(&(hello.len() as u16).to_be_bytes());
-    record.extend_from_slice(&hello);
-    record
 }
 
 #[cfg(test)]
@@ -387,7 +318,7 @@ mod tests {
 
     #[test]
     fn the_probe_hello_is_complete_and_carries_its_sni() {
-        let hello = build_test_client_hello("discord.com");
+        let hello = crate::packet::tls::build_client_hello("discord.com");
         let record_len = u16::from_be_bytes([hello[3], hello[4]]) as usize;
         assert_eq!(
             record_len,

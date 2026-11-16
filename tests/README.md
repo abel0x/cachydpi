@@ -21,13 +21,13 @@ bash tests/run_all_tests.sh --skip-root
 |------|-------|-------------|
 | `unit_tests.rs` | 33 | TCP checksum, TLS/HTTP/QUIC parsing, domain filtering, IP ID numbering |
 | `comprehensive_tests.rs` | 116 | Config loading, strategy logic, edge cases, error handling |
-| `strategy_integration_tests.rs` | 97 | Multi-strategy interactions, fragment ordering, domain filtering, checksums |
+| `strategy_integration_tests.rs` | 101 | Multi-strategy interactions, fragment ordering, domain filtering, checksums |
 | `injection_path_tests.rs` | 9 | Verdict and injection order: fragments sent before the original is dropped, fallback on send failure |
 | `deploy_preserves_config.rs` | 5 | `deploy.sh` keeps an existing config, run against a sandbox |
 | `logging_single_sink.rs` | 3 | Each message reaches the journal once under systemd |
 | `no_identifying_fields_leak.rs` | 3 | Identifying log fields always go through the redaction switch |
 
-The modules under `src/` carry another 96 unit tests of their own.
+The modules under `src/` carry another 100 unit tests of their own.
 
 ### System Tests (shell scripts, require root)
 

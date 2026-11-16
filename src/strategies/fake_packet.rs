@@ -8,8 +8,9 @@
 // - Wrong checksum: server drops the packet, DPI doesn't verify
 // - Wrong sequence number: server ignores, DPI may process
 //
-// The fake packet carries a dummy payload that tricks BPI into
-// thinking the connection goes somewhere harmless.
+// The fake packet carries a browser-shaped ClientHello or HTTP request naming
+// `fake_sni`, which tricks the DPI into thinking the connection goes
+// somewhere harmless.
 
 use crate::config::Config;
 use crate::packet::ip::{self, IpHeader};
@@ -85,50 +86,23 @@ pub fn create_fake_rst_desync(
     Some(packet)
 }
 
-/// Fake payload for HTTP requests — looks like a request to a benign host
-const FAKE_HTTP_PAYLOAD: &[u8] = b"GET / HTTP/1.1\r\nHost: www.google.com\r\n\r\n";
-
-/// Default SNI used in fake ClientHello packets for desync.
-/// DPI processes this and classifies the connection as going to an allowed domain.
-const FAKE_SNI_DOMAIN: &str = "www.google.com";
-
-/// Fill `out` from the kernel's random source.
+/// A plain-HTTP request for `host`, with the headers a browser sends.
 ///
-/// A fake goes out once per connection, so a syscall here costs nothing that
-/// matters. Should `getrandom` fail, the bytes come from the standard
-/// library's per-process random hash keys instead: still unpredictable from
-/// outside and different for every call, which is what these values must be.
-fn fill_random(out: &mut [u8]) {
-    // SAFETY: `out` is a valid, writable buffer of exactly `out.len()` bytes.
-    let filled = unsafe { libc::getrandom(out.as_mut_ptr().cast(), out.len(), 0) };
-    if usize::try_from(filled).is_ok_and(|n| n == out.len()) {
-        return;
-    }
-
-    use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CALLS: AtomicU64 = AtomicU64::new(0);
-    let call = CALLS.fetch_add(1, Ordering::Relaxed);
-    let keys = std::collections::hash_map::RandomState::new();
-    for (i, chunk) in out.chunks_mut(8).enumerate() {
-        let mut h = keys.build_hasher();
-        h.write_u64(call);
-        h.write_usize(i);
-        chunk.copy_from_slice(&h.finish().to_be_bytes()[..chunk.len()]);
-    }
-}
-
-/// The 32-byte `random` of a ClientHello.
-fn client_random() -> [u8; 32] {
-    let mut out = [0u8; 32];
-    fill_random(&mut out);
-    out
-}
-
-fn random_u32() -> u32 {
-    let mut out = [0u8; 4];
-    fill_random(&mut out);
-    u32::from_ne_bytes(out)
+/// A request line and a Host header alone is a shape no browser produces; a
+/// DPI could pick the fake out by it.
+pub fn build_fake_http_request(host: &str) -> Vec<u8> {
+    format!(
+        "GET / HTTP/1.1\r\n\
+         Host: {host}\r\n\
+         User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0\r\n\
+         Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n\
+         Accept-Language: en-US,en;q=0.5\r\n\
+         Accept-Encoding: gzip, deflate\r\n\
+         Connection: keep-alive\r\n\
+         Upgrade-Insecure-Requests: 1\r\n\
+         \r\n"
+    )
+    .into_bytes()
 }
 
 /// Whether two TCP checksum values verify alike. Ones' complement has two
@@ -145,7 +119,7 @@ fn same_checksum(a: u16, b: u16) -> bool {
 /// match on, where a corrupted segment's checksum is just some other number.
 fn wrong_checksum(correct: u16) -> u16 {
     loop {
-        let candidate = random_u32() as u16;
+        let candidate = crate::random::u32() as u16;
         if !same_checksum(candidate, correct) {
             return candidate;
         }
@@ -162,98 +136,14 @@ const WRONG_SEQ_BACK_MAX: u32 = 1 << 20;
 
 /// A random distance in that range, so the offset is not a constant either.
 fn wrong_seq_back() -> u32 {
-    WRONG_SEQ_BACK_MIN + random_u32() % (WRONG_SEQ_BACK_MAX - WRONG_SEQ_BACK_MIN + 1)
+    WRONG_SEQ_BACK_MIN + crate::random::u32() % (WRONG_SEQ_BACK_MAX - WRONG_SEQ_BACK_MIN + 1)
 }
 
-/// Build a realistic TLS ClientHello payload with a given SNI domain.
-/// This is the key desync technique: DPI processes this fake ClientHello
-/// and enters the "allowed" state for this connection. The fake packet
-/// has a wrong TTL so it never reaches the real server.
+/// The fake ClientHello: a browser-shaped hello for `sni`. The DPI reads it
+/// and classifies the connection by its name; its TTL, checksum or sequence
+/// number keeps it from the real server.
 pub fn build_fake_client_hello_payload(sni: &str) -> Vec<u8> {
-    let sni_bytes = sni.as_bytes();
-    let sni_name_list_len = 3 + sni_bytes.len(); // type(1) + name_len(2) + name
-    let sni_ext_data_len = 2 + sni_name_list_len; // list_len(2) + list
-    let extensions_total_len = 4 + sni_ext_data_len; // ext_type(2) + ext_len(2) + data
-
-    // Common cipher suites that look realistic
-    let cipher_suites: &[u8] = &[
-        0x13, 0x01, // TLS_AES_128_GCM_SHA256
-        0x13, 0x02, // TLS_AES_256_GCM_SHA384
-        0x13, 0x03, // TLS_CHACHA20_POLY1305_SHA256
-        0xc0, 0x2c, // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-        0xc0, 0x2b, // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-        0xc0, 0x30, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-        0xc0, 0x2f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-    ];
-
-    let client_hello_body_len = 2       // version
-        + 32                             // random
-        + 1                              // session_id_len
-        + 2 + cipher_suites.len()        // cipher_suites_len + suites
-        + 2                              // compression (len + null)
-        + 2 + extensions_total_len; // extensions_len + extensions
-
-    let handshake_body_len = client_hello_body_len;
-    let record_payload_len = 4 + handshake_body_len; // hs_type(1) + hs_len(3) + body
-
-    let mut payload = Vec::with_capacity(5 + record_payload_len);
-
-    // TLS Record Header
-    payload.push(0x16); // content_type: Handshake
-    payload.push(0x03);
-    payload.push(0x01); // version: TLS 1.0 (record layer)
-    payload.push((record_payload_len >> 8) as u8);
-    payload.push((record_payload_len & 0xFF) as u8);
-
-    // Handshake Header
-    payload.push(0x01); // type: ClientHello
-    payload.push(((handshake_body_len >> 16) & 0xFF) as u8);
-    payload.push(((handshake_body_len >> 8) & 0xFF) as u8);
-    payload.push((handshake_body_len & 0xFF) as u8);
-
-    // ClientHello Body
-    payload.push(0x03);
-    payload.push(0x03); // version: TLS 1.2
-
-    // 32 bytes random, fresh for every hello. A real client never repeats
-    // this field, so a fixed value would let a DPI match every fake by it.
-    payload.extend_from_slice(&client_random());
-
-    payload.push(0x00); // session_id_len = 0
-
-    // Cipher suites
-    payload.push((cipher_suites.len() >> 8) as u8);
-    payload.push((cipher_suites.len() & 0xFF) as u8);
-    payload.extend_from_slice(cipher_suites);
-
-    // Compression methods
-    payload.push(0x01); // length = 1
-    payload.push(0x00); // null compression
-
-    // Extensions total length
-    payload.push((extensions_total_len >> 8) as u8);
-    payload.push((extensions_total_len & 0xFF) as u8);
-
-    // SNI Extension (type 0x0000)
-    payload.push(0x00);
-    payload.push(0x00); // ext_type: server_name
-    payload.push((sni_ext_data_len >> 8) as u8);
-    payload.push((sni_ext_data_len & 0xFF) as u8);
-
-    // Server Name List
-    payload.push((sni_name_list_len >> 8) as u8);
-    payload.push((sni_name_list_len & 0xFF) as u8);
-    payload.push(0x00); // name_type: hostname
-    payload.push((sni_bytes.len() >> 8) as u8);
-    payload.push((sni_bytes.len() & 0xFF) as u8);
-    payload.extend_from_slice(sni_bytes);
-
-    payload
-}
-
-/// Get the default fake TLS payload (proper ClientHello with google.com SNI)
-fn fake_tls_payload() -> Vec<u8> {
-    build_fake_client_hello_payload(FAKE_SNI_DOMAIN)
+    crate::packet::tls::build_client_hello(sni)
 }
 
 /// Create fake packets to inject before the real packet.
@@ -268,15 +158,14 @@ pub fn create_fake_packets(
 ) -> Vec<Vec<u8>> {
     let mut fakes = Vec::new();
 
-    // Determine fake payload based on destination port
-    let fake_payload_owned;
-    let fake_payload: &[u8] = if tcp_hdr.dst_port == 80 || tcp_hdr.dst_port == 8080 {
-        FAKE_HTTP_PAYLOAD
+    // The fake speaks the real packet's protocol, naming the configured host.
+    let sni = &config.strategies.fake_sni;
+    let fake_payload_owned = if tcp_hdr.dst_port == 80 || tcp_hdr.dst_port == 8080 {
+        build_fake_http_request(sni)
     } else {
-        // Use proper ClientHello with google.com SNI for desync
-        fake_payload_owned = fake_tls_payload();
-        &fake_payload_owned
+        build_fake_client_hello_payload(sni)
     };
+    let fake_payload: &[u8] = &fake_payload_owned;
 
     // Strategy 1: Fake packet with wrong TTL (most reliable)
     if config.strategies.fake_packet_ttl > 0 || config.strategies.auto_ttl {

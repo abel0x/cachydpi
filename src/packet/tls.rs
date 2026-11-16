@@ -369,10 +369,163 @@ pub fn is_hostname_syntax(name: &str) -> bool {
     labels.len() >= 2 && labels.iter().all(|l| !l.is_empty() && l.len() <= 63)
 }
 
+/// A complete ClientHello record for `domain`, shaped like a browser's.
+///
+/// Real servers answer it with a ServerHello: TLS 1.3 and 1.2 suites,
+/// supported_versions and an X25519 key share. A bare hello offering no
+/// usable cipher draws only a seven-byte alert, which is easy to lose, and is
+/// not what a DPI box sees from a browser. The same goes for a decoy: a hello
+/// carrying nothing but an SNI is a shape no browser sends, and a DPI can
+/// pick the fake out by it.
+///
+/// The random, the session id and the key share are fresh for every call, as
+/// they are in every real handshake; a repeated value would let a DPI match
+/// each hello by it.
+pub fn build_client_hello(domain: &str) -> Vec<u8> {
+    fn ext(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
+        out.extend_from_slice(&kind.to_be_bytes());
+        out.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        out.extend_from_slice(data);
+    }
+
+    let noise: [u8; 96] = crate::random::bytes();
+    let (random, rest) = noise.split_at(32);
+    let (session_id, key) = rest.split_at(32);
+
+    let name = domain.as_bytes();
+    let mut sni = ((name.len() + 3) as u16).to_be_bytes().to_vec();
+    sni.push(0); // host_name
+    sni.extend_from_slice(&(name.len() as u16).to_be_bytes());
+    sni.extend_from_slice(name);
+
+    let mut key_share = 36u16.to_be_bytes().to_vec(); // one entry: group, len, key
+    key_share.extend_from_slice(&[0x00, 0x1d, 0x00, 0x20]); // x25519, 32 bytes
+    key_share.extend_from_slice(key);
+
+    let mut exts = Vec::new();
+    ext(&mut exts, 0x0000, &sni);
+    ext(&mut exts, 0x0017, &[]); // extended_master_secret
+    ext(&mut exts, 0xff01, &[0x00]); // renegotiation_info, initial
+    ext(
+        &mut exts,
+        0x000a, // supported_groups: x25519, secp256r1, secp384r1
+        &[0x00, 0x06, 0x00, 0x1d, 0x00, 0x17, 0x00, 0x18],
+    );
+    ext(&mut exts, 0x000b, &[0x01, 0x00]); // ec_point_formats: uncompressed
+    ext(&mut exts, 0x0023, &[]); // session_ticket, none held
+    ext(
+        &mut exts,
+        0x0010, // ALPN: h2, http/1.1
+        &[
+            0x00, 0x0c, 0x02, b'h', b'2', 0x08, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1',
+        ],
+    );
+    ext(&mut exts, 0x0005, &[0x01, 0x00, 0x00, 0x00, 0x00]); // status_request: OCSP
+    ext(&mut exts, 0x0033, &key_share);
+    ext(&mut exts, 0x002b, &[0x04, 0x03, 0x04, 0x03, 0x03]); // versions 1.3, 1.2
+    ext(
+        &mut exts,
+        0x000d, // signature_algorithms
+        &[
+            0x00, 0x16, 0x04, 0x03, 0x05, 0x03, 0x06, 0x03, 0x08, 0x04, 0x08, 0x05, 0x08, 0x06,
+            0x04, 0x01, 0x05, 0x01, 0x06, 0x01, 0x02, 0x03, 0x02, 0x01,
+        ],
+    );
+    ext(&mut exts, 0x002d, &[0x01, 0x01]); // psk_key_exchange_modes: psk_dhe_ke
+
+    let suites: [u16; 15] = [
+        0x1301, 0x1303, 0x1302, 0xc02b, 0xc02f, 0xcca9, 0xcca8, 0xc02c, 0xc030, 0xc00a, 0xc009,
+        0xc013, 0xc014, 0x009c, 0x009d,
+    ];
+    let mut body = vec![0x03, 0x03];
+    body.extend_from_slice(random);
+    // A 32-byte legacy session id, as TLS 1.3 clients send for middlebox
+    // compatibility; an empty one marks a hello as not from a browser.
+    body.push(32);
+    body.extend_from_slice(session_id);
+    body.extend_from_slice(&((suites.len() * 2) as u16).to_be_bytes());
+    for s in suites {
+        body.extend_from_slice(&s.to_be_bytes());
+    }
+    body.extend_from_slice(&[0x01, 0x00]); // compression: null
+    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&exts);
+
+    let mut hello = vec![TLS_CLIENT_HELLO];
+    hello.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+    hello.extend_from_slice(&body);
+    let mut record = vec![TLS_HANDSHAKE, 0x03, 0x01];
+    record.extend_from_slice(&(hello.len() as u16).to_be_bytes());
+    record.extend_from_slice(&hello);
+    record
+}
+
 /// Check if a TCP payload starts with a TLS ClientHello
 pub fn is_tls_client_hello(data: &[u8]) -> bool {
     if data.len() < 6 {
         return false;
     }
     data[0] == TLS_HANDSHAKE && data[5] == TLS_CLIENT_HELLO
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Extension types in a ClientHello record, in order.
+    fn extension_types(record: &[u8]) -> Vec<u16> {
+        let body = &record[9..];
+        let mut at = 2 + 32;
+        at += 1 + body[at] as usize; // session id
+        at += 2 + u16::from_be_bytes([body[at], body[at + 1]]) as usize; // suites
+        at += 1 + body[at] as usize; // compression
+        let end = at + 2 + u16::from_be_bytes([body[at], body[at + 1]]) as usize;
+        at += 2;
+        let mut types = Vec::new();
+        while at < end {
+            types.push(u16::from_be_bytes([body[at], body[at + 1]]));
+            at += 4 + u16::from_be_bytes([body[at + 2], body[at + 3]]) as usize;
+        }
+        assert_eq!(at, end, "extension lengths do not add up");
+        assert_eq!(end, body.len(), "bytes after the extensions");
+        types
+    }
+
+    #[test]
+    fn the_built_hello_is_complete_and_parses() {
+        let hello = build_client_hello("discord.com");
+        assert_eq!(
+            u16::from_be_bytes([hello[3], hello[4]]) as usize,
+            hello.len() - 5,
+            "a short record leaves the server waiting"
+        );
+        let hs_len = u32::from_be_bytes([0, hello[6], hello[7], hello[8]]) as usize;
+        assert_eq!(hs_len, hello.len() - 9);
+
+        let parsed = TlsClientHello::parse(&hello).unwrap();
+        assert_eq!(parsed.sni_domain(), Some("discord.com"));
+        assert!(parsed.resume.is_none());
+    }
+
+    /// The extensions a TLS 1.3 browser sends: a hello carrying only an SNI is
+    /// a shape no browser produces.
+    #[test]
+    fn the_built_hello_carries_a_browsers_extensions() {
+        let types = extension_types(&build_client_hello("example.com"));
+        for (kind, name) in [
+            (0x0000, "server_name"),
+            (0x000a, "supported_groups"),
+            (0x000d, "signature_algorithms"),
+            (0x0010, "ALPN"),
+            (0x002b, "supported_versions"),
+            (0x0033, "key_share"),
+            (0x002d, "psk_key_exchange_modes"),
+        ] {
+            assert!(types.contains(&kind), "missing {name}");
+        }
+        let mut unique = types.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), types.len(), "an extension appears twice");
+    }
 }

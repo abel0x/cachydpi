@@ -743,10 +743,10 @@ impl StrategyEngine {
         //
         // Strategy:
         // 1. Send fake RST with wrong TTL → DPI tears down connection tracking
-        // 2. Send fake ClientHello with google.com SNI → DPI reclassifies as "safe"
+        // 2. Send fake ClientHello naming `fake_sni` → DPI reclassifies as "safe"
         // 3. Send real ClientHello split into 3 fragments, in reverse order (disorder)
         //
-        // DPI sees: RST(fake) → ClientHello(google.com, fake) → data fragments
+        // DPI sees: RST(fake) → ClientHello(fake_sni, fake) → data fragments
         // Server sees: ClientHello fragments (correct order, reassembled)
         // Mode 7 adds techniques per destination as the DPI is seen to
         // interfere: 1 reorders and splits in three, 2 adds fakes, 3 adds the
@@ -825,9 +825,9 @@ impl StrategyEngine {
                 // advanced DPI (Sandvine/ProcERA class):
                 //
                 // 1. Fake RST → DPI tears down connection tracking for this 5-tuple
-                // 2. Fake ClientHello(google.com) → DPI creates NEW tracking entry
-                //    classifying this connection as going to google.com (allowed)
-                // 3. Real fragments arrive → DPI treats as continuation of "google.com"
+                // 2. Fake ClientHello(fake_sni) → DPI creates NEW tracking entry
+                //    classifying this connection as going to fake_sni (allowed)
+                // 3. Real fragments arrive → DPI treats as continuation of fake_sni
                 if use_desync {
                     // Fake RST to break DPI connection tracking
                     if let Some(fake_rst) =
@@ -837,7 +837,7 @@ impl StrategyEngine {
                     }
                 }
 
-                // Standard fakes (includes fake ClientHello with google.com SNI)
+                // Standard fakes (includes the fake ClientHello naming fake_sni)
                 fakes.extend(fake_packet::create_fake_packets(
                     packet.raw,
                     &packet.ip,

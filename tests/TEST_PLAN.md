@@ -1031,7 +1031,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 | F-10 | No SYN-ACK on record for a connection | auto_ttl / flow_ttl | Fakes fall back to the latest measured TTL; passive defence leaves its RSTs alone | Low — daemon started mid-connection, or slot reused |
 | F-11 | Mobile data CGNAT multi-hop | auto_ttl | Extra hops from CGNAT affect TTL calculation | Medium — fake_ttl may be wrong |
 | F-12 | Rate limiter Mutex contention | rawsocket | High-load fake packet sending delayed | Low — affects only fake timing |
-| F-13 | Hardcoded fake payload (www.google.com) | fake_packet | DPI could detect and ignore pattern | Low — unlikely DPI checks this |
+| F-13 | Fake SNI does not match the destination | fake_packet | DPI comparing `fake_sni` with the server address sees the mismatch | Low — set `fake_sni` to a name on the same CDN |
 | F-14 | Stale nftables rules after upgrade | rules.rs | New version's rule format conflicts | Medium — requires manual cleanup |
 | F-15 | Multiple CachyDPI instances | nfqueue/rules | Second instance removes the first's table as stale; queue conflict | High — systemd prevents, but manual runs possible |
 | F-16 | Metrics socket permission denied | metrics_server.rs | Monitor can't read counters | Low — socket created 0666, RuntimeDirectory 0755 |

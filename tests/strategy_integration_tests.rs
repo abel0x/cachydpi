@@ -1416,19 +1416,94 @@ mod fake_packet_tests {
     use super::*;
     use cachydpi::strategies::fake_packet;
 
-    /// A real client never repeats the ClientHello `random`, so a fixed one
-    /// would let a DPI match every fake by those 32 bytes alone.
+    /// A real client never repeats the ClientHello `random`, its session id
+    /// or its key share, so a fixed one would let a DPI match every fake by
+    /// those bytes alone. Everything else is the same from hello to hello.
     #[test]
     fn fake_client_hello_random_is_fresh_every_time() {
         // record header (5) + handshake header (4) + client_version (2)
         const RANDOM: std::ops::Range<usize> = 11..43;
+        // session id length byte, then 32 bytes
+        const SESSION_ID: std::ops::Range<usize> = 44..76;
         let a = fake_packet::build_fake_client_hello_payload("www.google.com");
         let b = fake_packet::build_fake_client_hello_payload("www.google.com");
         assert_eq!(a.len(), b.len());
+        assert_eq!(a[43], 32, "legacy session id must be 32 bytes");
         assert_ne!(a[RANDOM], b[RANDOM], "two hellos shared their random");
-        assert_eq!(a[..RANDOM.start], b[..RANDOM.start]);
-        assert_eq!(a[RANDOM.end..], b[RANDOM.end..]);
+        assert_ne!(
+            a[SESSION_ID], b[SESSION_ID],
+            "two hellos shared their session id"
+        );
         assert_ne!(a[RANDOM], [0u8; 32]);
+
+        // The X25519 key share is the last 32-byte stretch that may differ.
+        let key = a
+            .windows(4)
+            .position(|w| w == [0x00, 0x1d, 0x00, 0x20])
+            .unwrap()
+            + 4;
+        let key = key..key + 32;
+        assert_ne!(
+            a[key.clone()],
+            b[key.clone()],
+            "two hellos shared their key share"
+        );
+        for i in 0..a.len() {
+            if !RANDOM.contains(&i) && !SESSION_ID.contains(&i) && !key.contains(&i) {
+                assert_eq!(a[i], b[i], "byte {i} differs outside the random fields");
+            }
+        }
+    }
+
+    /// Both fakes name the configured host, so a user can pick one their DPI
+    /// lets through.
+    #[test]
+    fn fakes_name_the_configured_host() {
+        let mut config = config_with_fake_packets();
+        config.strategies.fake_sni = "cdn.example.net".to_string();
+
+        let pkt = build_tls_packet("blocked.example", 64);
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+        let fakes =
+            fake_packet::create_fake_packets(&pkt, &parsed.ip, parsed.tcp().unwrap(), 3, &config);
+        assert!(!fakes.is_empty());
+        for fake in &fakes {
+            let fp = ParsedPacket::parse(fake, Direction::Outbound).unwrap();
+            let hello = tls::TlsClientHello::parse(fp.tcp().unwrap().payload)
+                .expect("fake must be a ClientHello");
+            assert_eq!(hello.sni_domain(), Some("cdn.example.net"));
+        }
+
+        let pkt = build_http_packet("blocked.example");
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+        let fakes =
+            fake_packet::create_fake_packets(&pkt, &parsed.ip, parsed.tcp().unwrap(), 3, &config);
+        assert!(!fakes.is_empty());
+        for fake in &fakes {
+            let fp = ParsedPacket::parse(fake, Direction::Outbound).unwrap();
+            let request = cachydpi::packet::http::HttpRequest::parse(fp.tcp().unwrap().payload)
+                .expect("fake must be an HTTP request");
+            assert_eq!(request.host_domain(), Some("cdn.example.net"));
+        }
+    }
+
+    /// The fake HTTP request carries the headers a browser sends, not a bare
+    /// request line and Host.
+    #[test]
+    fn fake_http_request_looks_like_a_browser() {
+        let request = fake_packet::build_fake_http_request("www.google.com");
+        let text = std::str::from_utf8(&request).unwrap();
+        assert!(text.starts_with("GET / HTTP/1.1\r\nHost: www.google.com\r\n"));
+        assert!(text.ends_with("\r\n\r\n"));
+        for header in [
+            "User-Agent: ",
+            "Accept: ",
+            "Accept-Language: ",
+            "Accept-Encoding: ",
+        ] {
+            assert!(text.contains(header), "missing {header}");
+        }
+        assert!(!text.contains("\n\n"), "bare newlines");
     }
 
     #[test]
@@ -1766,6 +1841,45 @@ mode = "blacklist"
         assert_eq!(config.strategies.tcp_window_size, 0);
         // A config written before fake_ttl_max existed gets the cap too.
         assert_eq!(config.strategies.fake_ttl_max, 4);
+        // And one written before fake_sni existed keeps the old fake host.
+        assert_eq!(config.strategies.fake_sni, "www.google.com");
+    }
+
+    #[test]
+    fn fake_sni_is_read_from_the_config() {
+        let toml = r#"
+[strategies]
+fake_sni = "static.example.org"
+
+[domains]
+mode = "blacklist"
+"#;
+        let f = write_temp_config(toml);
+        let config = Config::load(f.path()).unwrap();
+        assert_eq!(config.strategies.fake_sni, "static.example.org");
+        assert!(config.validate().is_ok());
+    }
+
+    /// The DPI reads the fake SNI as a hostname; anything else would make the
+    /// fake stand out, or not parse at all.
+    #[test]
+    fn a_fake_sni_that_is_not_a_hostname_is_rejected() {
+        for bad in [
+            "",
+            "localhost",
+            "WWW.Google.com",
+            "www.google.com.",
+            "a..b",
+            "under_score.example",
+            "space here.example",
+        ] {
+            let mut config = Config::default();
+            config.strategies.fake_sni = bad.to_string();
+            assert!(config.validate().is_err(), "accepted {bad:?}");
+        }
+        let mut config = Config::default();
+        config.strategies.fake_sni = "a-b.example.co".to_string();
+        assert!(config.validate().is_ok());
     }
 
     #[test]

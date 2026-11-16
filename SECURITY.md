@@ -114,6 +114,7 @@ A rejected path is logged and skipped, not loaded. This stops a malicious or mis
 ### Argument and packet bounds
 
 - `queue_num` is validated as `0..=65534` so the inbound queue (`queue_num + 1`) cannot overflow; `mode` is validated as `1..=7` (`src/cli.rs`).
+- `strategies.fake_sni` must be a lowercase DNS hostname (`is_hostname_syntax`, `src/packet/tls.rs`); anything else stops the daemon at startup. It names a decoy host the operator chose, never a site the user visits, and is not written to the log or the metrics socket (`--dry-run` prints it with the rest of the configuration).
 - Packet parsers (IP/TCP/TLS/HTTP) bound-check lengths and offsets before indexing; checksum helpers return early on undersized input. Rust's memory safety covers the rest.
 
 ---

@@ -19,6 +19,7 @@ pub mod metrics_server;
 pub mod nfqueue;
 pub mod packet;
 pub mod privileges;
+pub mod random;
 pub mod rawsocket;
 pub mod rules;
 pub mod settings;

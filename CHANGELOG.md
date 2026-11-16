@@ -7,7 +7,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- `fake_sni` in `[strategies]` sets the host the fake packets name, the SNI of
+  the fake ClientHello and the Host of the fake HTTP request. It defaults to
+  `www.google.com`, the name used until now, and must be a lowercase
+  hostname.
+
 ### Fixed
+
+- The fake ClientHello carried only an SNI: no supported_versions, key
+  share, signature algorithms or ALPN, a shape no browser sends and one a DPI
+  could pick out on its own. It is now built like a browser's, by the same
+  code as the `detect` probe, with its random, session id and key share
+  fresh for every hello. The fake HTTP request now carries a browser's
+  headers instead of only a request line and Host.
 
 - The wrong-checksum fake (`fake_wrong_checksum`) always carried the TCP
   checksum `0xDEAD`, and the wrong-SEQ fake (`fake_wrong_seq`) always started
