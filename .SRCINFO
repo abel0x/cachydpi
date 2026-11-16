@@ -17,6 +17,6 @@ pkgbase = cachydpi
 	backup = etc/cachydpi/config.toml
 	backup = etc/cachydpi/blacklist.txt
 	source = cachydpi-1.11.0.tar.gz::https://github.com/abel0x/cachydpi/archive/v1.11.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = c078382abba8148b9bce5bfca3f16fd1fa6c1389c49f8911b7692808231736ee
 
 pkgname = cachydpi

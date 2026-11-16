@@ -22,7 +22,7 @@ makedepends=(
 install="$pkgname.install"
 backup=('etc/cachydpi/config.toml' 'etc/cachydpi/blacklist.txt')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('c078382abba8148b9bce5bfca3f16fd1fa6c1389c49f8911b7692808231736ee')
 
 prepare() {
     cd "$srcdir/$pkgname-$pkgver"
