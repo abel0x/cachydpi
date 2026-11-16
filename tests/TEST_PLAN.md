@@ -1,7 +1,7 @@
 # CachyDPI — Real-World Validation Test Plan
 
-**Target:** CachyDPI v1.0.0  
-**Date:** 2026-04-09  
+**Target:** CachyDPI 1.10.x  
+**Date:** 2026-04-09 (written for v1.0.0), revised 2026-11-16  
 **Scope:** Complete behavioral validation under real and hostile conditions
 
 ---
@@ -78,12 +78,12 @@
 
 **Expected Result:**
 - tcpdump shows inbound RST packets arriving
-- Logs show them scored and dropped (score ≥ 4)
+- An RST whose TTL differs from the connection's SYN-ACK by more than one hop is dropped; the DPI sits closer than the server, so its RSTs arrive with more TTL left
 - Connection still may fail (passive only drops RST, doesn't fragment)
 
 **Failure Indicators:**
 - RST packets not reaching queue 201 → nftables INPUT rules missing
-- RST scored < 4 (false negative) → DPI crafting RSTs with TCP options/non-zero window
+- RST with a clearly higher TTL than the SYN-ACK passes → no flow record (SYN-ACK not queued, or its slot reused)
 - Connection succeeds → DPI was only using RST (passive mode was sufficient)
 
 ---
@@ -100,14 +100,14 @@
 1. Connect to a service that normally RSTs (e.g., port scan a closed port)
 2. `curl http://<non-blocked-site>:<closed-port>` 
 3. Check logs — no "dropping forged RST" should appear
-4. Test against a server deliberately configured to RST with non-zero window + options
+4. Close an established connection with an RST from the server side (e.g. a test server that aborts the socket)
 
 **Expected Result:**
-- Legitimate RSTs pass through (score < 4)
-- Only DPI-signature RSTs (window=0, no options, TTL 64/128, RST|ACK) are dropped
+- An RST before any SYN-ACK (closed port) passes, so the connection fails at once instead of waiting out a timeout
+- A server's own RST arrives with the SYN-ACK's hop count and passes, whatever its shape. Shape is not used: a Linux server's own RST has window 0 and no options, exactly like a forged one
 
 **Failure Indicators:**
-- Legitimate RSTs dropped → scoring threshold too low
+- Legitimate RSTs dropped → hop tolerance too tight, or a neighbour flow's TTL read from a reused slot
 - Legitimate connections to non-blocked sites break randomly
 - Gaming/streaming connections drop mid-session
 
@@ -173,21 +173,21 @@
 **Steps:**
 1. `sudo cachydpi -m 5 --auto-ttl --foreground -vvv`
 2. Connect to blocked domain
-3. Check log for "auto-TTL detected from SYN-ACK" — note recv_ttl, initial_ttl, hops, fake_ttl
-4. Verify: `traceroute <target>` — compare real hop count with detected
-5. Verify fake_ttl > 0 and fake_ttl < hops
+3. Check log for "auto-TTL: first SYN-ACK seen" — note recv_ttl and fake_ttl
+4. `sudo tcpdump -v -i <iface> host <target-ip>` — read the TTL on the fakes sent ahead of the ClientHello
+5. Verify: `traceroute <target>` — compare real hop count with detected
 
 **Expected Result:**
 - recv_ttl matches expected (e.g., server with initial TTL 64 at 12 hops → recv_ttl≈52)
-- hops = initial_ttl - recv_ttl (e.g., 12)
-- fake_ttl = hops - 2 (e.g., 10 — reaches DPI but expires before server)
+- hops = initial_ttl - recv_ttl (e.g., 12), initial_ttl being 64, 128 or 255
+- Measured fake TTL = hops - 2 (hops > 3) or max(1, hops), then capped at `fake_ttl_max` (default 4)
+- Each connection's fakes take their TTL from that connection's own SYN-ACK
 - Bypass succeeds
 
 **Failure Indicators:**
-- fake_ttl = 0 → detection never triggered (SYN-ACK not reaching queue 201)
-- fake_ttl too low (1-2) → fakes expire before DPI
-- fake_ttl too high → fakes reach server, potentially confusing TCP state
-- Detection stores first value only → problem if first connection goes to nearby CDN
+- No "first SYN-ACK seen" log → SYN-ACK not reaching queue 201
+- fake TTL too low (1-2) → fakes expire before DPI; raise `fake_ttl_max`
+- fake TTL too high → fakes reach server and it resets the connection; lower `fake_ttl_max`. The SYN-ACK measures the return path, which can be much longer than the path out
 
 ---
 
@@ -212,7 +212,7 @@
 **Failure Indicators:**
 - fake_ttl = 1 but DPI is at hop 2 → fakes don't reach DPI
 - fake_ttl = hops (no subtraction) → fakes reach server
-- One CDN edge detection locks TTL for all subsequent connections to different servers
+- A connection to a far server sends fakes with the CDN edge's TTL although its own SYN-ACK was seen
 
 ---
 
@@ -227,15 +227,15 @@
 **Steps:**
 1. Start with `--set-ttl 8`
 2. Connect to blocked domain
-3. Verify logs show NO "auto-TTL detected" message
+3. Verify logs show NO "auto-TTL: first SYN-ACK seen" message
 4. Verify fake packets use TTL=8
 
 **Expected Result:**
 - auto_ttl disabled by CLI override
-- All fake packets use TTL=8 regardless of SYN-ACK TTL
+- All fake packets use TTL=8 regardless of SYN-ACK TTL; a fixed TTL is not capped by `fake_ttl_max`
 
 **Failure Indicators:**
-- "auto-TTL detected" appears → override not applied
+- "auto-TTL: first SYN-ACK seen" appears → override not applied
 - Fake packets visible in tcpdump with wrong TTL value
 
 ---
@@ -479,12 +479,12 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 **Purpose:** Test if DPI detects and ignores CachyDPI's fake packets.
 
 **Setup:**
-- Mode 4 (fake only), wrong_checksum=true
+- Mode 4 (fake only), `fake_wrong_checksum = true` (or `--wrong-chksum`)
 
 **Steps:**
 1. `curl https://<blocked-domain>` with only fake packet strategy
 2. If blocked: DPI verifies checksums (our fakes detected)
-3. Switch to wrong_seq=true, retry
+3. Switch to `fake_wrong_seq = true` (or `--wrong-seq`), retry
 4. Switch to wrong TTL, retry
 5. Record which fake strategies succeed
 
@@ -535,17 +535,17 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 **Steps:**
 1. `for i in (seq 1 200); curl -s -o /dev/null --max-time 5 https://www.youtube.com &; end`
 2. Monitor queue 200 and 201 simultaneously
-3. Check for race conditions in auto_ttl AtomicU8
+3. Check for races between the inbound thread writing flow records and the outbound thread reading them
 
 **Expected Result:**
 - All connections processed without deadlock
-- auto_ttl set once by first SYN-ACK, reused by all subsequent
+- Each connection's fakes use the TTL from its own SYN-ACK; the shared fallback only serves connections with no record
 - No verdict leaks (every packet gets ACCEPT or DROP)
 
 **Failure Indicators:**
 - Packets stuck in queue (no verdict issued)
 - Network-wide stall
-- Inconsistent auto_ttl values seen across log entries
+- A connection's fakes carry another connection's TTL
 
 ---
 
@@ -588,16 +588,17 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 3. `sudo nft list table ip cachydpi` — should fail (table removed)
 4. Start again, then `kill -9 $(pgrep cachydpi)` (SIGKILL — no cleanup)
 5. `sudo nft list table ip cachydpi` — check if rules remain
+6. `sudo cachydpi force-stop` — the leftover table should be gone
 
 **Expected Result:**
 - Normal stop (SIGTERM): rules cleaned up by Drop handler
-- SIGKILL: panic hook may not run → rules may persist
+- SIGKILL: no cleanup runs → rules persist until the next start removes them as stale, or `cachydpi force-stop` removes them
 - NFQUEUE bypass flag prevents traffic blackhole even if rules persist
 
 **Failure Indicators:**
 - Rules remain after SIGTERM → Drop handler not called
 - Traffic blocked after SIGKILL → bypass flag not set on nftables rules
-- System requires manual `nft delete table ip cachydpi` after crashes
+- Table still present after `force-stop` or after the next start
 
 ---
 
@@ -638,13 +639,13 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 3. `sudo cachydpi -m 99`
 
 **Expected Result:**
-- Invalid modes default to Mode 5 (AllActive) via `from_mode_number()` match arm `_ => BypassMode::AllActive`
-- No crash, graceful fallback
+- clap rejects any mode outside `1..=7` before startup, with a range error and a non-zero exit
+- No rules installed, nothing left behind
 
 **Failure Indicators:**
 - Crash on invalid mode
+- Invalid mode accepted and silently mapped to another one
 - Silent mode 0 (no bypass at all, not obvious to user)
-- Clap rejects before reaching from_mode_number (mode range validation)
 
 ---
 
@@ -660,7 +661,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 2. Check error message
 
 **Expected Result:**
-- Clear error: "requires CAP_NET_ADMIN and CAP_NET_RAW capabilities"
+- Clear error naming the missing privilege (root, or CAP_NET_ADMIN and CAP_NET_RAW)
 - Non-zero exit code
 - No partial state left behind
 
@@ -787,13 +788,13 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 
 **Expected Result:**
 - First segment may contain partial ClientHello → parser handles gracefully
-- Second segment with remaining data → nftables only queues first ACK with payload
-- Bypass may partially fail if SNI in second segment
+- nftables queues the first few outbound packets of the connection, so the later segment is seen too
+- When the SNI is in a later segment, the extension walk resumes there (`hello_resume.rs`) and that segment is split at the SNI
 
 **Failure Indicators:**
 - Parser panic on truncated ClientHello
-- Double processing (both segments matched)
-- SNI not found because it's in second segment (known limitation)
+- Double processing (both segments split)
+- SNI in a later segment not found → resume record missing or overwritten
 
 ---
 
@@ -1021,21 +1022,21 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 | F-01 | DPI verifies TCP checksums | fake_packet (wrong_checksum) | Fake packets ignored by DPI | Medium — use wrong_ttl/wrong_seq instead |
 | F-02 | DPI at same hop as CDN edge | auto_ttl | Fake TTL can't target gap between DPI and server | High — manual TTL needed |
 | F-03 | DNS poisoned by ISP | All bypass strategies | Bypass applied to wrong IP, useless | Critical — requires external DoH/DoT |
-| F-04 | TLS ClientHello split across TCP segments | tls_split | SNI in second segment, missed by parser | Medium — rare with normal MSS |
+| F-04 | TLS ClientHello split across TCP segments | tls_split / hello_resume | SNI in a later segment, found only if the resume record survives | Low — fixed-size table, entries live less than a round trip |
 | F-05 | IPv6 QUIC traffic | quic desync | No IP fragmentation possible on IPv6 | Medium — QUIC falls back to TCP |
 | F-06 | ENOBUFS under extreme load | nfqueue | Kernel drops packets | Low — bypass flag prevents blackhole |
-| F-07 | SIGKILL (kill -9) | rule cleanup | nftables rules remain | Low — bypass flag prevents blackhole, manual cleanup needed |
+| F-07 | SIGKILL (kill -9) | rule cleanup | nftables rules remain | Low — bypass flag prevents blackhole; next start or `cachydpi force-stop` removes them |
 | F-08 | ECH (Encrypted ClientHello) | tls_split | SNI not visible → no bypass possible | High — growing adoption |
-| F-09 | ISP changes DPI strategy | passive detection | Scoring thresholds may not match new patterns | Medium — requires threshold tuning |
-| F-10 | Auto-TTL locked to first SYN-ACK | auto_ttl | All connections use TTL from first server (CDN) | Medium — hot path to different server may differ |
+| F-09 | ISP changes DPI strategy | passive detection | DPI injecting from as far as the server defeats the hop-count check; redirect/alert scoring may miss new patterns | Medium — requires tuning |
+| F-10 | No SYN-ACK on record for a connection | auto_ttl / flow_ttl | Fakes fall back to the latest measured TTL; passive defence leaves its RSTs alone | Low — daemon started mid-connection, or slot reused |
 | F-11 | Mobile data CGNAT multi-hop | auto_ttl | Extra hops from CGNAT affect TTL calculation | Medium — fake_ttl may be wrong |
 | F-12 | Rate limiter Mutex contention | rawsocket | High-load fake packet sending delayed | Low — affects only fake timing |
 | F-13 | Hardcoded fake payload (www.google.com) | fake_packet | DPI could detect and ignore pattern | Low — unlikely DPI checks this |
 | F-14 | Stale nftables rules after upgrade | rules.rs | New version's rule format conflicts | Medium — requires manual cleanup |
-| F-15 | Multiple CachyDPI instances | nfqueue/rules | Queue conflict, double processing | High — systemd prevents, but manual runs possible |
+| F-15 | Multiple CachyDPI instances | nfqueue/rules | Second instance removes the first's table as stale; queue conflict | High — systemd prevents, but manual runs possible |
 | F-16 | Metrics socket permission denied | metrics_server.rs | Monitor can't read counters | Low — socket created 0666, RuntimeDirectory 0755 |
 | F-17 | Stale metrics socket | metrics_server.rs | Monitor connects to dead socket | Low — connect() fails immediately, retry loop handles |
-| F-18 | Per-dest TTL cache grows unbounded | strategies/mod.rs | Memory growth with many destinations | Low — entries are small (IpAddr + u8), thousands fit in KB |
+| F-18 | Flow table churn | flow_ttl.rs | 8192 fixed slots: under heavy connection churn records are overwritten before use (see F-10) | Low — memory is fixed, a reused slot reads as unknown |
 
 ---
 
@@ -1051,7 +1052,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 | QUIC bypass (IPv6) | 0% | Known limitation |
 | Passive RST detection | 75–85% | Medium |
 | Auto-TTL accuracy | 75–90% | Medium |
-| Per-dest TTL cache | 90–95% | High |
+| Per-connection TTL (flow table) | 90–95% | High |
 | Long-term stability (24h+) | 90–95% | High |
 | Monitor TUI connectivity | 95–99% | High |
 | Cross-ISP compatibility | 60–80% | Low |
@@ -1063,9 +1064,9 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 | Core packet processing | **Stable** | Pre-allocated buffers, careful error handling |
 | nftables management | **Stable** | Isolated table, clean Drop handler |
 | TLS/HTTP parsing | **Stable** | Bounds checks, partial record handling |
-| Auto-TTL detection | **Improved** | Per-destination cache eliminates first-connection lock-in |
+| Auto-TTL detection | **Improved** | Taken from each connection's own SYN-ACK, capped at `fake_ttl_max` |
 | QUIC desync | **Fragile** | IPv6 unsupported, IP fragmentation may be blocked |
-| Passive RST detection | **Moderate** | Threshold-based, may need tuning per ISP |
+| Passive RST detection | **Moderate** | RSTs judged by hop count; redirects and TLS alerts still scored |
 | Fake packet strategy | **Moderate** | Depends on DPI sophistication |
 | Domain filtering | **Stable** | O(1) lookup, subdomain matching |
 | Resource management | **Stable** | No evident leaks, pre-allocated buffers |
@@ -1075,9 +1076,9 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 ### Most Fragile Components (Ranked)
 
 1. **QUIC desync** — IPv6 unsupported, middlebox fragmentation drop
-2. **Passive RST scoring** — Hardcoded thresholds, ISP-specific DPI behavior
+2. **Passive defence** — Needs the connection's SYN-ACK on record; redirect/alert scoring has fixed thresholds
 3. **Fake packet effectiveness** — DPI sophistication varies widely
-4. **Auto-TTL detection** — Improved with per-destination cache, but CGNAT still affects calculation
+4. **Auto-TTL detection** — Measures the return path, not the path out; CGNAT still affects calculation
 
 ---
 
@@ -1089,23 +1090,25 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 
 3. **Inject fake packets** — Sends packets with wrong TTL (expires before server), wrong checksum (server drops), or wrong sequence number (out of window). DPI processes them; server ignores them.
 
-4. **Drop DPI-forged RST packets** — Identifies and discards RST packets that score highly on DPI indicators (window=0, no options, suspicious TTL, RST|ACK flags).
+4. **Drop DPI-forged RST packets** — Discards RSTs that arrive from closer than the connection's server, judged against the TTL of that connection's SYN-ACK.
 
 5. **Drop DPI-forged HTTP redirects** — Identifies injected 302/301 redirects containing block page indicators from known DPI vendors (Sandvine, Forcepoint, Allot, Netsweeper, etc.).
 
-6. **Auto-detect optimal fake packet TTL** — Uses SYN-ACK TTL to estimate server hop distance and calculates a TTL that passes the DPI but expires before reaching the server.
+6. **Auto-detect optimal fake packet TTL** — Uses each connection's SYN-ACK TTL to estimate server hop distance and calculates a TTL that passes the DPI but expires before reaching the server, capped at `fake_ttl_max`.
 
 7. **QUIC desync via IP fragmentation** — Fragments QUIC Initial packets at the IP layer (IPv4 only), splitting the connection ID across fragments.
 
 8. **Domain-level filtering** — Applies bypass only to specified domains (blacklist/whitelist), with subdomain matching. Unrelated traffic passes through with minimal overhead.
 
-9. **Survive crashes without blocking traffic** — NFQUEUE bypass flag ensures packets flow even if CachyDPI crashes. Drop handler cleans nftables rules on normal exit.
+9. **Survive crashes without blocking traffic** — NFQUEUE bypass flag ensures packets flow even if CachyDPI crashes. Drop handler cleans nftables rules on normal exit; the next start or `cachydpi force-stop` removes rules a killed daemon left behind.
 
 10. **ISP-agnostic operation** — No hardcoded ISP detection. Auto-TTL and generic block page patterns work across any ISP with DPI.
 
 11. **Monitor real-time performance** — Built-in TUI dashboard showing packet counters, strategy hits, health indicators, and recent events. Zero-overhead atomic counters with Unix socket IPC.
 
-12. **Per-destination TTL management** — Separate auto-TTL values for each destination IP address, preventing CDN proximity issues from affecting other connections.
+12. **Per-connection TTL management** — Each connection's fake TTL comes from its own SYN-ACK, kept in a fixed-size table of hashed tags that holds no addresses, so a nearby CDN edge does not affect other connections.
+
+13. **Adapt per site (mode 7)** — Starts each site on the mode 5 techniques and adds techniques for sites where the DPI is seen interfering, without active probing.
 
 ---
 
@@ -1232,9 +1235,9 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 5. Compare log counts with monitor TUI values
 
 **Expected Result:**
-- `tls_fragment_hits` in monitor matches "TLS ClientHello" log count
+- `tls_splits` in monitor matches "TLS ClientHello" log count
 - `forged_rst_drops` matches "dropping forged RST" log count
-- `packets_accepted` + `packets_dropped` + `packets_modified` ≈ total processed
+- `out_accepted` + `out_dropped` + `out_modified` ≈ `out_total`
 - No counter overflow or reset during normal operation
 
 **Failure Indicators:**
@@ -1244,31 +1247,30 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 
 ---
 
-### TC-046: Per-Destination TTL Cache Behavior
+### TC-046: Per-Connection Fake TTL
 
-**Purpose:** Validate that auto-TTL is stored and used per destination IP, not globally.
+**Purpose:** Validate that each connection's fakes take their TTL from that connection's own SYN-ACK, not from a value shared across connections.
 
 **Setup:**
-- Mode 5, auto_ttl=true, foreground verbose
+- Mode 5, auto_ttl=true, fake packets on
+- `fake_ttl_max` raised (e.g. 32) so the cap does not flatten the difference
 - Two target servers at different hop distances
 
 **Steps:**
 1. Start with `-m 5 --auto-ttl --foreground -vvv`
-2. `curl https://www.youtube.com` — note auto-TTL in logs (e.g., fake_ttl=10 for IP 142.250.X.X)
-3. `curl https://discord.com` — note auto-TTL in logs (e.g., fake_ttl=7 for IP 162.159.X.X)
-4. Repeat youtube.com — verify same TTL used (cache hit, not re-detected)
-5. Verify both TTL values correct for their respective servers
+2. `sudo tcpdump -v -i <iface> 'tcp dst port 443'` in another terminal
+3. `curl https://www.youtube.com` — note the SYN-ACK TTL and the TTL on the fakes
+4. `curl https://discord.com` — same
+5. Repeat youtube.com — the fakes should again match that connection's SYN-ACK
 
 **Expected Result:**
-- Different destination IPs get different fake_ttl values
-- Cache persists across connections to same IP
-- Log shows "TTL cache hit" for repeated connections
-- No interference between different destination TTLs
+- Servers at different distances get different fake TTLs
+- Each fake TTL follows from its own connection's SYN-ACK (see TC-007 for the formula)
+- No interference between connections
 
 **Failure Indicators:**
-- All destinations get same TTL → global cache still in use
-- TTL changes on repeated connection → cache not persisting
-- RwLock contention visible in logs → performance issue
+- All connections get the same fake TTL although their SYN-ACKs differ → per-connection record not used
+- A connection's fakes carry the other server's TTL
 
 ---
 
@@ -1280,7 +1282,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 
 3. **Cannot fragment QUIC on IPv6** — IPv6 prohibits sender-side IP fragmentation. QUIC desync is IPv4-only. IPv6 QUIC traffic passes unmodified.
 
-4. **Cannot adapt mid-session** — Auto-TTL is stored once from the first SYN-ACK and reused for all subsequent connections. It does not re-evaluate for different server paths.
+4. **Cannot measure the path out** — Auto-TTL comes from the SYN-ACK, which shows the return path. Where that path is longer than the one out, the measured TTL would carry fakes past the DPI to the server; `fake_ttl_max` caps it for that reason.
 
 5. **Cannot detect DPI strategy changes at runtime** — If the ISP changes DPI behavior (e.g., switches from passive to active), CachyDPI doesn't automatically adjust its mode.
 
@@ -1292,7 +1294,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 
 9. **Cannot guarantee bypass on every ISP** — DPI technology varies widely. Mode 5 with auto_ttl works for most common DPI, but some ISPs may require different tuning or may be entirely resistant.
 
-10. **Cannot recover auto-TTL for different network paths** — The first detected TTL is used globally. If connections go to servers at different distances, the fake TTL may be wrong for some of them.
+10. **Cannot time fakes for a connection whose SYN-ACK it did not see** — A connection opened before the daemon started, or whose record was overwritten, falls back to the latest measured TTL, which may suit a different server.
 
 ---
 
@@ -1328,7 +1330,7 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 - Panic hook doesn't run for SIGKILL
 - nftables rules remain installed
 - `bypass` flag on queue rules means traffic still flows through kernel
-- **Result:** Rules persist but traffic not blocked; manual `nft delete table ip cachydpi` required
+- **Result:** Rules persist but traffic not blocked; the next start or `cachydpi force-stop` removes them
 
 ### Scenario 6: ISP Upgrades to Stateful TCP Reassembly DPI
 - New DPI hardware buffers TCP segments before inspection
@@ -1338,6 +1340,6 @@ EXCEPT the listed (trusted) ones — the genuine opposite of blacklist mode.
 
 ### Scenario 7: Multiple CachyDPI Instances
 - User runs `sudo cachydpi` manually while systemd service is active
-- Both try to create "cachydpi" nftables table → second fails
+- The second removes the first's "cachydpi" table as stale and installs its own
 - Both try to bind to queue 200 → undefined behavior
 - **Result:** Unpredictable packet processing, possible queue stalls
