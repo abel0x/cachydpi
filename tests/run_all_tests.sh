@@ -146,3 +146,9 @@ echo "  GRAND TOTAL: $TOTAL_PASS passed, $TOTAL_FAIL failed, $TOTAL_SKIP skipped
 echo "============================================================"
 echo "  Combined report: $COMBINED"
 echo "  Individual reports: $REPORT_DIR/"
+
+# Anything that runs this suite judges it by its exit status; a summary
+# line alone let a failing run pass as a success.
+if [[ $TOTAL_FAIL -gt 0 ]]; then
+    exit 1
+fi

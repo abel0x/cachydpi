@@ -45,39 +45,31 @@ warn() { echo "[WARN] $1" | tee -a "$REPORT"; WARN=$((WARN + 1)); }
 echo "" >> "$REPORT"
 echo "--- Test 1: cargo audit (CVE/vulnerability check) ---" >> "$REPORT"
 
-if command -v cargo-audit &>/dev/null; then
-    AUDIT_OUTPUT=$(cargo audit 2>&1 || true)
+# Judged by cargo audit's exit status, as CI does: it fails on a
+# vulnerability and passes on warnings (unsound, unmaintained, yanked).
+# A clean run prints no summary line to match, so reading the text alone
+# took a clean audit for a failure.
+run_audit() {
+    # `|| rc=$?` keeps set -e from ending the script on a failing audit.
+    local rc=0
+    AUDIT_OUTPUT=$(cargo audit 2>&1) || rc=$?
     echo "$AUDIT_OUTPUT" | tail -20 | sed 's/^/    /' >> "$REPORT"
-
-    if echo "$AUDIT_OUTPUT" | grep -q "0 vulnerabilities found\|No vulnerable"; then
-        pass "No known vulnerabilities found"
-    elif echo "$AUDIT_OUTPUT" | grep -q "allowed warning"; then
-        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
-        warn "cargo audit: $VULN_COUNT allowed advisory warning(s) from transitive deps (review periodically)"
-    elif echo "$AUDIT_OUTPUT" | grep -qi "warning"; then
-        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
-        warn "cargo audit has warnings: $VULN_COUNT advisory notices"
+    VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "^Crate:" || true)
+    if [[ $rc -ne 0 ]]; then
+        fail "cargo audit failed (exit $rc): $VULN_COUNT advisory record(s)"
+    elif [[ $VULN_COUNT -gt 0 ]]; then
+        warn "cargo audit: $VULN_COUNT advisory warning(s), no vulnerability (review periodically)"
     else
-        VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
-        fail "Vulnerabilities found: $VULN_COUNT"
+        pass "cargo audit: no vulnerabilities and no warnings"
     fi
+}
+
+if command -v cargo-audit &>/dev/null; then
+    run_audit
 else
     echo "  Installing cargo-audit..." >> "$REPORT"
     if cargo install cargo-audit 2>/dev/null; then
-        AUDIT_OUTPUT=$(cargo audit 2>&1 || true)
-        echo "$AUDIT_OUTPUT" | tail -20 | sed 's/^/    /' >> "$REPORT"
-        if echo "$AUDIT_OUTPUT" | grep -q "0 vulnerabilities found\|No vulnerable"; then
-            pass "No known vulnerabilities found"
-        elif echo "$AUDIT_OUTPUT" | grep -q "allowed warning"; then
-            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
-            warn "cargo audit: $VULN_COUNT allowed advisory warning(s) from transitive deps (review periodically)"
-        elif echo "$AUDIT_OUTPUT" | grep -qi "warning"; then
-            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
-            warn "cargo audit has warnings: $VULN_COUNT advisory notices"
-        else
-            VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Crate:" || true)
-            fail "Vulnerabilities found: $VULN_COUNT"
-        fi
+        run_audit
     else
         skip "cargo-audit not available and install failed"
     fi
