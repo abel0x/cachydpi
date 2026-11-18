@@ -400,6 +400,102 @@ fn whitelist_built_from_inline_list_via_load() {
     assert!(config.should_process_domain("blocked.com"));
 }
 
+/// The longest name DNS allows: three 63-byte labels and a 61-byte one.
+fn longest_dns_name() -> String {
+    let name = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61)
+    );
+    assert_eq!(name.len(), cachydpi::config::MAX_DOMAIN_LEN);
+    name
+}
+
+#[test]
+fn dot_dense_hostname_matches_in_bounded_time() {
+    // An SNI or Host header is the sender's to choose. Hashing every suffix
+    // of a name made of N dots costs N²/2 bytes: 64 000 dots took about
+    // 0.4 s in a release build, on the one worker every outbound packet
+    // waits for. With the work bounded it takes microseconds even unoptimized,
+    // so this limit is far above the fixed cost and far below the old one.
+    let mut config = Config::default();
+    config.domains.mode = DomainMode::Blacklist;
+    config.domain_set = ["example.com".to_string()].into_iter().collect();
+
+    let dots = ".".repeat(64_000);
+    let dotted_listed = format!("{dots}example.com");
+    let start = std::time::Instant::now();
+    assert!(!config.should_process_domain(&dots));
+    assert!(config.should_process_domain(&dotted_listed));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "matching two 64 000-byte dot-dense names took {elapsed:?}"
+    );
+}
+
+#[test]
+fn domain_filter_matches_up_to_the_dns_name_limit() {
+    // Bounding the search must not lose a match: a listed name of the full
+    // 253 bytes still matches exactly and as the parent of a longer name.
+    let longest = longest_dns_name();
+    let mut config = Config::default();
+    config.domains.mode = DomainMode::Blacklist;
+    config.domain_set = [longest.clone(), "example.com".to_string()]
+        .into_iter()
+        .collect();
+
+    assert!(config.should_process_domain(&longest));
+    assert!(config.should_process_domain(&format!("x.{longest}")));
+    assert!(config.should_process_domain(&format!("{}.{longest}", "y".repeat(300))));
+    // A long name whose parent is a short listed name is found too.
+    assert!(config.should_process_domain(&format!("{}.example.com", "z".repeat(1000))));
+    // Containing the listed name is not having it as a parent.
+    assert!(!config.should_process_domain(&format!("x{longest}")));
+}
+
+#[test]
+fn overlong_hostname_does_not_widen_exempt_bypass() {
+    // In exempt mode a miss means "apply the bypass". A name too long to be
+    // listed must still be recognized as a subdomain of an exempt parent,
+    // or making it long would be a way to pull exempt traffic into the
+    // bypass.
+    let mut config = Config::default();
+    config.domains.mode = DomainMode::Exempt;
+    config.domain_set = ["safe.com".to_string()].into_iter().collect();
+
+    let long_sub = format!("{}safe.com", "a.".repeat(10_000));
+    assert!(!config.should_process_domain(&long_sub));
+    assert!(config.should_process_domain(&format!("{}other.com", "a.".repeat(10_000))));
+}
+
+#[test]
+fn load_drops_list_entries_longer_than_a_dns_name() {
+    // An entry no DNS name can equal could never match; keeping it would
+    // only hide the mistake. It is dropped, and the rest of the list stays.
+    let longest = longest_dns_name();
+    let mut config = Config::default();
+    config.domains.mode = DomainMode::Blacklist;
+    config.domains.blacklist = vec![
+        format!("x{longest}"),
+        longest.clone(),
+        "example.com".to_string(),
+    ];
+    config.load_domain_lists().expect("valid entries remain");
+
+    assert_eq!(config.domain_set.len(), 2);
+    assert!(config.domain_set.contains(&longest));
+    assert!(config.domain_set.contains("example.com"));
+
+    // A list of nothing but overlong entries is as empty as an empty one.
+    let mut only_overlong = Config::default();
+    only_overlong.domains.mode = DomainMode::Blacklist;
+    only_overlong.domains.blacklist = vec![format!("x{longest}")];
+    assert!(only_overlong.load_domain_lists().is_err());
+}
+
 #[test]
 fn domain_filter_none_passes_all() {
     let mut config = Config::default();

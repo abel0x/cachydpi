@@ -14,6 +14,12 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+/// The longest a DNS name can be in its text form (RFC 1035 §2.3.4).
+///
+/// No domain list entry may be longer, which is what keeps the cost of
+/// matching an attacker-sized hostname bounded; see `domain_in_set`.
+pub const MAX_DOMAIN_LEN: usize = 253;
+
 /// Main configuration structure
 ///
 /// Every section defaults except `[domains]`, which is required on purpose.
@@ -544,7 +550,20 @@ impl Config {
             DomainMode::Exempt => &self.domains.exempt,
             DomainMode::None => return Ok(()),
         };
-        self.domain_set = list.iter().map(|d| d.to_lowercase()).collect();
+        // `domain_in_set` never looks at a suffix longer than a DNS name can
+        // be, so a longer entry could never match. Say so instead of keeping
+        // an entry that silently does nothing.
+        let (kept, overlong): (Vec<&String>, Vec<&String>) =
+            list.iter().partition(|d| d.len() <= MAX_DOMAIN_LEN);
+        for d in &overlong {
+            warn!(
+                len = d.len(),
+                max = MAX_DOMAIN_LEN,
+                "ignoring domain list entry longer than a DNS name can be: {}…",
+                d.chars().take(40).collect::<String>()
+            );
+        }
+        self.domain_set = kept.iter().map(|d| d.to_lowercase()).collect();
         info!(domains = self.domain_set.len(), mode = %self.domains.mode, "domain filter ready");
 
         if self.domain_set.is_empty() && self.domain_filter_is_used() {
@@ -620,24 +639,37 @@ impl Config {
         }
     }
 
+    /// Whether `domain` or one of its parent domains is listed.
+    ///
+    /// `domain` comes straight off the wire (an SNI or a Host header, already
+    /// lowercased by the parsers), so its length and dot count are the
+    /// sender's choice. Hashing every suffix of it costs N²/2 bytes for N
+    /// dots: a 60 000-byte name of dots held the outbound worker for ~0.4 s.
+    ///
+    /// No listed entry is longer than `MAX_DOMAIN_LEN` (`load_domain_lists`
+    /// drops longer ones), so a longer suffix can never match and is not
+    /// tried. Only the last `MAX_DOMAIN_LEN + 1` bytes are scanned, which
+    /// bounds the work at about `MAX_DOMAIN_LEN` lookups of at most
+    /// `MAX_DOMAIN_LEN` bytes each, whatever the input. Every suffix that
+    /// could match is still checked, so the result is the same as checking
+    /// them all.
     fn domain_in_set(&self, domain: &str) -> bool {
-        // Domain is already lowercased by TLS/HTTP parsers
-        // Exact match (O(1))
-        if self.domain_set.contains(domain) {
+        // Exact match, e.g. "example.com" itself.
+        if domain.len() <= MAX_DOMAIN_LEN && self.domain_set.contains(domain) {
             return true;
         }
 
-        // Subdomain match: check each parent domain
-        // e.g., for "a.b.example.com" check "b.example.com", "example.com", "com"
-        let mut pos = 0;
-        while let Some(dot) = domain[pos..].find('.') {
-            pos += dot + 1;
-            if self.domain_set.contains(&domain[pos..]) {
-                return true;
-            }
-        }
-
-        false
+        // Parent domains: for "a.b.example.com" check "b.example.com",
+        // "example.com" and "com". The suffix after a dot at byte `i` is
+        // `len - i - 1` bytes long, so only dots from `lo` on can start one
+        // short enough to be listed.
+        let lo = domain.len().saturating_sub(MAX_DOMAIN_LEN + 1);
+        domain.as_bytes()[lo..]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b == b'.')
+            // A '.' is a single byte, so the byte after it starts a char.
+            .any(|(i, _)| self.domain_set.contains(&domain[lo + i + 1..]))
     }
 
     /// Validate that a domain list file path is under an allowed directory.

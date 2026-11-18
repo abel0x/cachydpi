@@ -5,6 +5,19 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Matching a hostname against the domain list no longer costs time that
+  grows with the square of its dot count. An SNI or Host header is the
+  sender's to choose, and a 60 000-byte name of dots held the outbound worker,
+  which every outbound packet waits on, for about 0.4 s. Only suffixes that
+  could be listed, at most 253 bytes, are now tried, so the same name takes
+  about 14 µs whatever its length, and every name matches as it did before.
+  A domain list entry longer than 253 bytes, which could never match, is
+  dropped at startup with a warning.
+
 ## [1.11.0] — 2026-11-16
 
 ### Added
