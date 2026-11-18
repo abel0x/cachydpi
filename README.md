@@ -36,7 +36,7 @@ CachyDPI installs an nftables table named `cachydpi` that queues outbound HTTP (
 - Linux kernel with `nfnetlink_queue` support (`modprobe nfnetlink_queue` if not auto-loaded)
 - `nftables`
 - Native libraries: `libnetfilter_queue` (≥ 1.0), `libnfnetlink`, `libmnl`
-- To build from source: Rust **1.85+** (the crate uses edition 2024; no exact MSRV is pinned), `cargo`, `pkg-config`
+- To build from source: Rust **1.88+** (edition 2024; the code and several dependencies need 1.88, and 1.87 fails to build), `cargo`, `pkg-config`
 - `CAP_NET_ADMIN` + `CAP_NET_RAW` at runtime (i.e. root, the systemd unit, or `setcap` on the binary)
 
 ## Installation
@@ -64,8 +64,9 @@ sudo ./install.sh
 ```bash
 # Build dependencies — Arch / CachyOS:
 sudo pacman -S --needed rust cargo pkg-config libnetfilter_queue libnfnetlink libmnl nftables base-devel
-# Build dependencies — Debian / Ubuntu:
-sudo apt install rustc cargo pkg-config libnetfilter-queue-dev libnfnetlink-dev libmnl-dev nftables build-essential
+# Build dependencies — Debian / Ubuntu (their packaged rustc is older than 1.88,
+# so get Rust from https://rustup.rs instead of apt):
+sudo apt install pkg-config libnetfilter-queue-dev libnfnetlink-dev libmnl-dev nftables build-essential
 
 git clone https://github.com/abel0x/cachydpi.git
 cd cachydpi
@@ -409,7 +410,7 @@ System-level test scripts (require root and a live network) live under `tests/` 
 
 ## Security
 
-The daemon runs as the dedicated, non-root `cachydpi` user, granted only `CAP_NET_ADMIN` + `CAP_NET_RAW` and keeping just `CAP_NET_ADMIN` after startup, behind a systemd unit with extensive hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`, capability bounding, namespace/syscall restrictions) and resource limits (`MemoryMax=64M`, `CPUQuota=25%`). It refuses to continue if it cannot drop excess capabilities. Verify the score yourself with `systemd-analyze security cachydpi`.
+The daemon runs as the dedicated, non-root `cachydpi` user, granted only `CAP_NET_ADMIN` + `CAP_NET_RAW` and keeping just `CAP_NET_ADMIN` after startup, in every one of its threads (it checks each before handling a packet), behind a systemd unit with extensive hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`, capability bounding, namespace/syscall restrictions) and resource limits (`MemoryMax=64M`, `CPUQuota=25%`). It refuses to continue if it cannot drop excess capabilities. Verify the score yourself with `systemd-analyze security cachydpi`.
 
 Full threat model, privilege model, and vulnerability-reporting process: **[SECURITY.md](SECURITY.md)**.
 
