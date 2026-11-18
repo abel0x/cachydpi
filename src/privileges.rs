@@ -290,6 +290,70 @@ pub fn drop_unnecessary_caps() -> Result<()> {
     Ok(())
 }
 
+/// The capability sets in a `/proc/<pid>/task/<tid>/status` file that hold
+/// anything outside `allowed`, as (set name, the excess bits).
+///
+/// A set missing from the file is not reported: every kernel this runs on
+/// writes all four, and an absent line holds nothing.
+fn excess_caps(status: &str, allowed: u64) -> Vec<(&str, u64)> {
+    status
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if !matches!(name, "CapInh" | "CapPrm" | "CapEff" | "CapAmb") {
+                return None;
+            }
+            let bits = u64::from_str_radix(value.trim(), 16).ok()?;
+            (bits & !allowed != 0).then_some((name, bits & !allowed))
+        })
+        .collect()
+}
+
+/// Check that no thread of this process holds a capability beyond
+/// `RETAINED_CAPS`.
+///
+/// Capabilities belong to threads, not the process: `drop_unnecessary_caps`
+/// changes only the thread that calls it, and a thread started before the
+/// drop keeps what it had. Threads started after it inherit the reduced
+/// sets. Reading every thread's sets catches one that was started too early,
+/// which checking the process as a whole (its main thread) cannot.
+pub fn verify_all_threads() -> Result<()> {
+    let allowed = RETAINED_CAPS.iter().fold(0u64, |m, c| m | c.bitmask());
+    let tasks =
+        std::fs::read_dir("/proc/self/task").context("failed to list this process's threads")?;
+    let mut offenders = Vec::new();
+    for task in tasks {
+        let task = task.context("failed to list this process's threads")?;
+        let dir = task.path();
+        // A thread that ended in the meantime has no status left to read.
+        let Ok(status) = std::fs::read_to_string(dir.join("status")) else {
+            continue;
+        };
+        let excess = excess_caps(&status, allowed);
+        if !excess.is_empty() {
+            let name = std::fs::read_to_string(dir.join("comm")).unwrap_or_default();
+            offenders.push(format!(
+                "thread {} ({}) holds {}",
+                task.file_name().to_string_lossy(),
+                name.trim(),
+                excess
+                    .iter()
+                    .map(|(set, bits)| format!("{set} {bits:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    if !offenders.is_empty() {
+        bail!(
+            "capabilities beyond {RETAINED_CAPS:?} remain after the drop: {}",
+            offenders.join("; ")
+        );
+    }
+    debug!("every thread holds at most {RETAINED_CAPS:?}");
+    Ok(())
+}
+
 /// Switch to a non-root user if currently running as root.
 ///
 /// When systemd sets NoNewPrivileges=yes, setuid/setgroups are blocked.
@@ -581,6 +645,105 @@ mod tests {
             }
             Some(STILL_ROOT) => panic!("drop_root reported success but the process is still root"),
             Some(other) => panic!("privilege drop failed (code {other})"),
+        }
+    }
+
+    /// What `/proc/<pid>/task/<tid>/status` shows of one thread's sets.
+    fn status(inh: &str, prm: &str, eff: &str, amb: &str) -> String {
+        format!(
+            "Name:\tcachydpi-sig\nUmask:\t0022\nCapInh:\t{inh}\nCapPrm:\t{prm}\n\
+             CapEff:\t{eff}\nCapBnd:\t0000000000003000\nCapAmb:\t{amb}\nNoNewPrivs:\t1\n"
+        )
+    }
+
+    const NET_ADMIN: u64 = 1 << 12;
+    const NET_RAW: u64 = 1 << 13;
+
+    #[test]
+    fn a_thread_holding_only_net_admin_passes() {
+        let s = status(
+            "0000000000000000",
+            "0000000000001000",
+            "0000000000001000",
+            "0000000000001000",
+        );
+        assert!(excess_caps(&s, NET_ADMIN).is_empty());
+    }
+
+    #[test]
+    fn the_signal_thread_as_the_audit_saw_it_is_caught() {
+        // The signal thread started before the drop kept 0x3000
+        // (NET_ADMIN | NET_RAW) in all four sets. The bounding set holds the
+        // same bits but grants nothing by itself, so it is not counted.
+        let s = status(
+            "0000000000003000",
+            "0000000000003000",
+            "0000000000003000",
+            "0000000000003000",
+        );
+        assert_eq!(
+            excess_caps(&s, NET_ADMIN),
+            vec![
+                ("CapInh", NET_RAW),
+                ("CapPrm", NET_RAW),
+                ("CapEff", NET_RAW),
+                ("CapAmb", NET_RAW)
+            ]
+        );
+    }
+
+    #[test]
+    fn one_set_over_the_limit_is_enough() {
+        let s = status(
+            "0000000000000000",
+            "0000000000201000", // CAP_SYS_ADMIN (21) left in permitted
+            "0000000000001000",
+            "0000000000000000",
+        );
+        assert_eq!(excess_caps(&s, NET_ADMIN), vec![("CapPrm", 1 << 21)]);
+    }
+
+    #[test]
+    fn the_retained_mask_is_net_admin() {
+        let allowed = RETAINED_CAPS.iter().fold(0u64, |m, c| m | c.bitmask());
+        assert_eq!(allowed, NET_ADMIN);
+    }
+
+    #[test]
+    fn the_proc_walk_passes_when_no_thread_holds_anything() {
+        // Exercise the real /proc walk where the outcome is known: a process
+        // whose sets are all empty. A test process inherits whatever its
+        // shell had (a desktop session can leave bits in the inheritable
+        // set), so only run where every set of this thread is empty.
+        let empty = |set| caps::read(None, set).is_ok_and(|c| c.is_empty());
+        if [
+            caps::CapSet::Inheritable,
+            caps::CapSet::Permitted,
+            caps::CapSet::Ambient,
+        ]
+        .into_iter()
+        .all(empty)
+        {
+            verify_all_threads().expect("no thread holds anything");
+        }
+    }
+
+    #[test]
+    fn the_proc_walk_finds_what_this_process_holds() {
+        // The converse, where this process holds something: in that case
+        // the walk must report it, since nothing here is allowed past
+        // RETAINED_CAPS except CAP_NET_ADMIN.
+        let held: u64 = [
+            caps::CapSet::Inheritable,
+            caps::CapSet::Permitted,
+            caps::CapSet::Ambient,
+        ]
+        .into_iter()
+        .filter_map(|set| caps::read(None, set).ok())
+        .flatten()
+        .fold(0, |m, c| m | c.bitmask());
+        if held & !caps::Capability::CAP_NET_ADMIN.bitmask() != 0 {
+            assert!(verify_all_threads().is_err());
         }
     }
 }

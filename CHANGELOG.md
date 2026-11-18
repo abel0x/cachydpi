@@ -12,6 +12,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - `rustix` updated to 1.1.6 to clear RUSTSEC-2026-0486, an unsoundness in
   its xattr functions with a zero-length buffer. CachyDPI never calls them;
   `cargo audit` now reports nothing.
+- `CAP_NET_RAW` is now given up by every thread. Capabilities are per thread
+  and the drop changes only the one that makes it, so the signal thread,
+  started before the drop, kept `CAP_NET_ADMIN` and `CAP_NET_RAW` for the
+  life of the process under the systemd unit, while the process itself
+  showed only `CAP_NET_ADMIN`. It now starts after the drop, and the daemon
+  checks every thread's capability sets before handling a packet and
+  refuses to run on if any holds more. Shutdown signals are still caught
+  from early in startup.
 
 ### Fixed
 

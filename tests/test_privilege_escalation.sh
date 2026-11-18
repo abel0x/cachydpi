@@ -189,6 +189,27 @@ if systemctl is-active "$SERVICE" &>/dev/null; then
                 fi
             done
 
+            # Capabilities belong to threads: /proc/$pid/status shows only the
+            # main thread, and a thread started before the drop keeps what it
+            # had. Every thread must hold NET_ADMIN (0x1000) at most.
+            extra_threads=""
+            for task in /proc/$pid/task/*; do
+                tname=$(cat "$task/comm" 2>/dev/null) || continue
+                for set in CapInh CapPrm CapEff CapAmb; do
+                    bits=$(grep "^$set:" "$task/status" 2>/dev/null | awk '{print $2}')
+                    [[ -n "$bits" ]] || continue
+                    if (( (16#$bits) & ~0x1000 )); then
+                        extra_threads+=" $tname:$set=$bits"
+                    fi
+                done
+            done
+            echo "  Threads: $(ls /proc/$pid/task | wc -l)" >> "$REPORT"
+            if [[ -z "$extra_threads" ]]; then
+                pass "Every thread holds at most CAP_NET_ADMIN"
+            else
+                fail "Threads hold capabilities beyond CAP_NET_ADMIN:$extra_threads"
+            fi
+
             # Check process UID
             uid=$(grep "^Uid:" /proc/$pid/status | awk '{print $2}')
             echo "  Process UID: $uid" >> "$REPORT"

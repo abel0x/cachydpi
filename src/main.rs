@@ -122,8 +122,9 @@ fn main() -> Result<()> {
     // Set process name
     cachydpi::privileges::set_process_name();
 
-    // Install signal handlers
-    setup_signal_handlers()?;
+    // Catch shutdown signals now; the thread that acts on them starts after
+    // the privilege drop (see spawn_signal_thread).
+    let signals = register_shutdown_signals()?;
 
     // Build the strategy engine before the dry run returns, so that inspecting
     // the configuration also reports which techniques it actually arms. It
@@ -224,6 +225,9 @@ fn main() -> Result<()> {
     // unclear privilege state.
     cachydpi::privileges::drop_root().context("FATAL: failed to drop root privileges")?;
 
+    // Every thread from here on starts with the reduced sets.
+    spawn_signal_thread(signals)?;
+
     // Start metrics server (Unix socket for cachydpi-monitor)
     let _metrics_handle = std::thread::Builder::new()
         .name("cachydpi-metrics".to_string())
@@ -231,6 +235,12 @@ fn main() -> Result<()> {
             cachydpi::metrics_server::run_metrics_server(&SHUTDOWN);
         })
         .context("failed to spawn metrics server thread")?;
+
+    // The drop changes only the thread that makes it, so check them all
+    // before any packet is handled. A thread holding more than it should is
+    // a bug in the startup order, and running on would hide it.
+    cachydpi::privileges::verify_all_threads()
+        .context("FATAL: a thread kept capabilities the drop should have removed")?;
 
     info!(
         mode = ?mode,
@@ -644,15 +654,29 @@ const SHUTDOWN_SIGNALS: [i32; 6] = [
     signal_hook::consts::SIGUSR2,
 ];
 
-/// Set up signal handlers for graceful shutdown
-fn setup_signal_handlers() -> Result<()> {
-    // Use a dedicated thread for signal handling
+/// Catch the shutdown signals from here on.
+///
+/// Registering is process-wide and immediate: from this call a signal no
+/// longer kills the process but waits in `Signals` until
+/// `spawn_signal_thread` starts reading. A setup failure that registering
+/// could hit is caught here too, on the main thread, rather than panicking
+/// a worker.
+fn register_shutdown_signals() -> Result<signal_hook::iterator::Signals> {
+    signal_hook::iterator::Signals::new(SHUTDOWN_SIGNALS)
+        .context("failed to register signal handlers")
+}
+
+/// Start the thread that turns a shutdown signal into `SHUTDOWN`.
+///
+/// Called after `drop_root`, never before: capabilities are per thread, and
+/// the drop reduces only the thread that runs it. A thread started earlier
+/// kept CAP_NET_RAW for the life of the process. One started now inherits
+/// the reduced sets. A signal that arrived in between was kept by `signals`
+/// and is read as soon as the thread starts.
+fn spawn_signal_thread(mut signals: signal_hook::iterator::Signals) -> Result<()> {
     std::thread::Builder::new()
         .name("cachydpi-sig".to_string())
         .spawn(move || {
-            let mut signals = signal_hook::iterator::Signals::new(SHUTDOWN_SIGNALS)
-                .expect("failed to register signal handlers");
-
             for sig in signals.forever() {
                 info!(signal = sig, "received signal");
                 SHUTDOWN.store(true, Ordering::Relaxed);

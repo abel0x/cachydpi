@@ -65,6 +65,8 @@ Only `CAP_NET_ADMIN` is kept afterwards. `CAP_NET_RAW` is needed to *open* the r
 
 The ambient raise is what makes the child `nft` process actually receive `CAP_NET_ADMIN`; the inheritable set alone grants a non-root child nothing, so without it teardown fails silently. `verify_dropped_state` then confirms the process is no longer root, holds `CAP_NET_ADMIN` in both the effective and ambient sets, and no longer holds `CAP_NET_RAW` — the daemon refuses to run on in an unclear privilege state rather than reporting a successful drop it cannot back up.
 
+Capabilities belong to each thread, and the drop changes only the thread that makes it; a thread started earlier keeps what it had. So every worker, the signal thread included, starts after `drop_root`, and before the first packet is handled `verify_all_threads` reads the sets of every thread in `/proc/self/task` and refuses to run on if any holds more than `CAP_NET_ADMIN`. Until 1.11.2 the signal thread started first and kept `CAP_NET_RAW` under the systemd unit. Shutdown signals are still caught from early in startup: they are registered on the main thread and wait until the signal thread reads them.
+
 **If dropping privileges fails, the process aborts** — it will not continue with excess privilege (`main.rs`: the `drop_root()` error is fatal).
 
 `preflight_drop_root` rehearses the whole transition in a forked child *before* any nftables rule is installed, so a uid that cannot be switched to is found while there is still nothing to clean up. Note that this only applies to the manual-root path: under the systemd unit the process starts as `User=cachydpi` already, so no `setuid` happens and the rehearsal does not run.
