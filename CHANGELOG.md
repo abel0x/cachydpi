@@ -7,6 +7,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Security
+
+- `rustix` updated to 1.1.6 to clear RUSTSEC-2026-0486, an unsoundness in
+  its xattr functions with a zero-length buffer. CachyDPI never calls them;
+  `cargo audit` now reports nothing.
+
 ### Fixed
 
 - A packet near the 64 KiB limit no longer stalls its connection. The
