@@ -5,6 +5,24 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A packet near the 64 KiB limit no longer stalls its connection. The
+  netlink buffer held 65 536 bytes, too few for the message that carries
+  such a packet, so the message was cut, the library rejected it, and the
+  packet never got a verdict. It stayed in the kernel queue, and so did each
+  retransmission of it: a 1 MB upload over loopback, where segments reach
+  that size, hung until it timed out. The buffer now fits the largest
+  message with room to spare, a message that still does not fit is
+  detected, and the packet of any message the library cannot handle is
+  accepted unchanged instead of being left queued.
+- A packet larger than the queue copies (65 531 bytes) is accepted as it is
+  rather than acted on. Every strategy rebuilds the packet from what it was
+  given, so working from the partial copy would have sent the packet on
+  without its tail.
+
 ## [1.11.1] — 2026-11-19
 
 ### Fixed

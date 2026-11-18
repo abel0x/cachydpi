@@ -1158,6 +1158,22 @@ pub fn process_packet<Q: VerdictSink, I: PacketInjector>(
         }
     };
 
+    // The queue copies at most 65 531 bytes of a packet, so a larger one
+    // arrives cut short. Every strategy rebuilds the packet from what it was
+    // given, and a verdict carrying a rebuilt packet replaces the original:
+    // acting on a partial copy would send the packet on without its tail.
+    // The original is still whole in the kernel, so let that one through.
+    if parsed.ip.declared_length() > raw_data.len() {
+        debug!(
+            id = packet_id,
+            declared = parsed.ip.declared_length(),
+            captured = raw_data.len(),
+            "packet only partly copied to the queue, accepting it unchanged"
+        );
+        queue.verdict_accept(packet_id)?;
+        return Ok(());
+    }
+
     // Update packet totals and timestamps
     match direction {
         Direction::Outbound => {

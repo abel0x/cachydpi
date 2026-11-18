@@ -125,6 +125,20 @@ impl IpHeader {
         }
     }
 
+    /// The length the header says the whole packet has, header included.
+    ///
+    /// Unlike `total_length` this does not saturate, so an IPv6 packet with
+    /// a full 65 535-byte payload reads as the 65 575 bytes it is. That is
+    /// what tells a packet the queue copied only part of (it caps the copy at
+    /// 65 531 bytes) from a complete one. An IPv6 jumbogram declares a
+    /// payload length of 0 and reads as its 40-byte header.
+    pub fn declared_length(&self) -> usize {
+        match self {
+            IpHeader::V4(h) => usize::from(h.total_length),
+            IpHeader::V6(h) => usize::from(h.payload_length) + IPV6_HEADER,
+        }
+    }
+
     /// Get IPv4 identification field (for reassembly tracking)
     pub fn identification(&self) -> u16 {
         match self {

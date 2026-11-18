@@ -499,6 +499,52 @@ fn non_matching_packet_is_plainly_accepted() {
     );
 }
 
+/// The queue copies at most 65 531 bytes of a packet. A strategy acting on a
+/// partial copy would send its replacement segments without the missing
+/// tail, and the original would be dropped in their favour: the packet's end
+/// would be lost. A copy shorter than the IP header says must be accepted
+/// as it is, with nothing sent.
+#[test]
+fn partly_copied_packet_is_accepted_unchanged() {
+    let (log, queue, injector) = harness(false, false);
+    let engine = make_engine(true);
+    let whole = build_tls_client_hello_packet("www.blockedsite.com");
+
+    // Control: the whole packet is split, so it would be acted on.
+    process_packet(&engine, &queue, &injector, 1, &whole, Direction::Outbound).unwrap();
+    assert!(
+        events(&log).iter().any(|e| matches!(e, Event::DataSent(_))),
+        "the complete packet should be split; events: {:?}",
+        events(&log)
+    );
+
+    log.lock().unwrap().clear();
+    let partial = &whole[..whole.len() - 10];
+    process_packet(&engine, &queue, &injector, 2, partial, Direction::Outbound).unwrap();
+    assert_eq!(
+        events(&log),
+        vec![Event::Accept(2)],
+        "a partial copy must be accepted unchanged, nothing injected"
+    );
+}
+
+/// An IPv6 packet's declared length is its payload length plus the 40-byte
+/// header, up to 65 575 bytes: more than the queue copies, and more than a
+/// u16 holds. The saturating `total_length` reads such a packet as 65 535
+/// bytes, which is why the completeness check uses `declared_length`.
+#[test]
+fn ipv6_declared_length_does_not_saturate() {
+    let mut header = vec![0u8; 40];
+    header[0] = 0x60; // version 6
+    header[4..6].copy_from_slice(&0xffffu16.to_be_bytes()); // payload length
+    header[6] = ip::PROTO_TCP;
+    header[7] = 64;
+    let parsed = ip::IpHeader::parse(&header).expect("valid IPv6 header");
+
+    assert_eq!(parsed.total_length(), u16::MAX);
+    assert_eq!(parsed.declared_length(), 65_575);
+}
+
 /// Every packet of a fragmenting burst starts as a copy of the original's
 /// header. Leaving its IP ID in place would put several segments of one flow
 /// on the wire under a single ID, which no real stack does. Each packet must
