@@ -222,7 +222,7 @@ echo '86494759+abel0x@users.noreply.github.com namespaces="git" ssh-ed25519 AAAA
   >> ~/.config/git/allowed_signers
 git config gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
 
-git verify-tag v1.11.0         # verify a signed release tag
+git verify-tag v1.11.1         # verify a signed release tag
 git log --show-signature -1    # verify the tip commit
 ```
 

@@ -2,7 +2,7 @@
 
 **System-wide DPI bypass for Linux — a native [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI) alternative.**
 
-[![Version](https://img.shields.io/badge/version-1.11.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.11.1-blue)](CHANGELOG.md)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-green)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/rust-2024_edition-orange)](Cargo.toml)
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)](#requirements)
@@ -293,7 +293,7 @@ echo '86494759+abel0x@users.noreply.github.com namespaces="git" ssh-ed25519 AAAA
 git config gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
 
 # 3. Verify:
-git verify-tag v1.11.0         # a release tag
+git verify-tag v1.11.1         # a release tag
 git log --show-signature -1    # the tip commit
 ```
 
