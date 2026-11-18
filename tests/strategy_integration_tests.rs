@@ -1409,6 +1409,136 @@ mod http_split_tests {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Module 6b: control flags across a split
+// ═══════════════════════════════════════════════════════════════════
+
+mod split_flag_tests {
+    use super::*;
+    use cachydpi::strategies::{http_split, tls_split};
+
+    /// `pkt` with its TCP flag byte replaced and the checksum redone.
+    fn with_flags(pkt: &[u8], flags: u8) -> Vec<u8> {
+        let mut p = pkt.to_vec();
+        p[20 + 13] = flags;
+        p[20 + 16..20 + 18].fill(0);
+        let cksum = tcp::tcp_checksum_v4(
+            &p[12..16].try_into().unwrap(),
+            &p[16..20].try_into().unwrap(),
+            &p[20..],
+        );
+        tcp::set_tcp_checksum(&mut p[20..], cksum);
+        p
+    }
+
+    /// (sequence number just past the payload, flags) of a packet.
+    fn end_and_flags(packet: &[u8]) -> (u32, u8) {
+        let parsed = ParsedPacket::parse(packet, Direction::Outbound).unwrap();
+        let t = parsed.tcp().unwrap();
+        (t.seq_num.wrapping_add(t.payload.len() as u32), t.flags)
+    }
+
+    fn ends_and_flags(frags: &[Vec<u8>]) -> Vec<(u32, u8)> {
+        frags.iter().map(|f| end_and_flags(f)).collect()
+    }
+
+    /// FIN must be on exactly the fragment that ends where the original
+    /// ended, whatever order the fragments go out in, and nowhere else.
+    fn assert_fin_only_last(original: &[u8], frags: &[Vec<u8>]) {
+        let (end, original_flags) = end_and_flags(original);
+        let seen = ends_and_flags(frags);
+        for (frag_end, flags) in &seen {
+            assert_eq!(
+                flags & tcp::TCP_FIN != 0,
+                *frag_end == end,
+                "FIN must be set exactly on the fragment ending at {end}: {seen:?}"
+            );
+            assert_eq!(
+                flags & !tcp::TCP_FIN,
+                original_flags & !tcp::TCP_FIN,
+                "other flags kept"
+            );
+        }
+        assert_eq!(seen.iter().filter(|(e, _)| *e == end).count(), 1);
+    }
+
+    const FIN_PSH_ACK: u8 = tcp::TCP_FIN | tcp::TCP_PSH | tcp::TCP_ACK;
+
+    #[test]
+    fn http_split_keeps_fin_on_the_last_fragment_only() {
+        let pkt = with_flags(&build_http_packet("www.example.com"), FIN_PSH_ACK);
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+        let frags =
+            http_split::split_http_request(&pkt, &parsed.ip, parsed.tcp().unwrap(), 0).unwrap();
+        assert_fin_only_last(&pkt, &frags);
+    }
+
+    #[test]
+    fn out_of_order_tls_split_keeps_fin_on_the_last_in_sequence() {
+        // Sent highest sequence first: the FIN goes out first, on the
+        // segment it belongs to, not on the one sent last.
+        let pkt = with_flags(&build_tls_packet("discord.com", 64), FIN_PSH_ACK);
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+        let tcp_hdr = parsed.tcp().unwrap();
+        let hello = tls::TlsClientHello::parse(tcp_hdr.payload).unwrap();
+
+        let ooo = tls_split::split_tls_out_of_order(&pkt, &parsed.ip, tcp_hdr, &hello).unwrap();
+        assert_fin_only_last(&pkt, &ooo);
+        assert_ne!(
+            ends_and_flags(&ooo)[0].1 & tcp::TCP_FIN,
+            0,
+            "highest-seq segment sent first"
+        );
+
+        for disorder in [false, true] {
+            let multi =
+                tls_split::split_tls_multi_fragment(&pkt, &parsed.ip, tcp_hdr, &hello, disorder)
+                    .unwrap();
+            assert_fin_only_last(&pkt, &multi);
+        }
+    }
+
+    #[test]
+    fn split_without_fin_copies_the_flags_unchanged() {
+        let pkt = build_http_packet("www.example.com");
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+        let frags =
+            http_split::split_http_request(&pkt, &parsed.ip, parsed.tcp().unwrap(), 0).unwrap();
+        for (_, flags) in ends_and_flags(&frags) {
+            assert_eq!(flags, tcp::TCP_PSH | tcp::TCP_ACK);
+        }
+    }
+
+    #[test]
+    fn data_with_syn_rst_or_urg_is_not_split() {
+        // Resegmenting would repeat SYN or RST on every segment, and an
+        // urgent pointer counts from each segment's own sequence number.
+        let engine = StrategyEngine::new(BypassMode::AllActive, default_config());
+        for extra in [tcp::TCP_SYN, tcp::TCP_RST, tcp::TCP_URG] {
+            for pkt in [
+                build_http_packet("www.example.com"),
+                build_tls_packet("discord.com", 64),
+            ] {
+                let pkt = with_flags(&pkt, tcp::TCP_PSH | tcp::TCP_ACK | extra);
+                let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+                let action = engine.evaluate_outbound(&parsed);
+                assert!(
+                    matches!(action, PacketAction::Accept),
+                    "flags {:#04x} must be left whole: {action:?}",
+                    tcp::TCP_PSH | tcp::TCP_ACK | extra
+                );
+            }
+        }
+        // Control: the same packets with FIN are still split.
+        let pkt = with_flags(&build_http_packet("www.example.com"), FIN_PSH_ACK);
+        let parsed = ParsedPacket::parse(&pkt, Direction::Outbound).unwrap();
+        assert!(!matches!(
+            engine.evaluate_outbound(&parsed),
+            PacketAction::Accept
+        ));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Module 7: Fake packet correctness
 // ═══════════════════════════════════════════════════════════════════
 

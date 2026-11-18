@@ -28,6 +28,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   rather than acted on. Every strategy rebuilds the packet from what it was
   given, so working from the partial copy would have sent the packet on
   without its tail.
+- Splitting a request that ends the connection (data and FIN in one packet)
+  no longer puts FIN on every fragment. The first fragment announced the end
+  of the stream before the rest of the data, and with the fragments sent out
+  of order the receiver could see that first. FIN now stays only on the
+  fragment that ends where the original ended. A data packet carrying SYN,
+  RST or URG is no longer split at all, since those flags do not carry over
+  to fragments.
 
 ## [1.11.1] — 2026-11-19
 

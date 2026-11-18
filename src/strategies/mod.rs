@@ -273,8 +273,15 @@ impl StrategyEngine {
         // TCP may split large payloads into segments where intermediate
         // segments have only ACK (no PSH). The TLS ClientHello can appear
         // in such a segment. Check any ACK packet with payload.
-        let has_data =
-            (tcp.is_psh_ack() || (tcp.is_ack() && tcp.has_payload())) && tcp.has_payload();
+        //
+        // Only FIN survives resegmenting correctly (on the last segment). SYN
+        // and RST would be repeated on every segment, and URG's urgent
+        // pointer counts from the segment's own sequence number, so a packet
+        // carrying any of them is left whole.
+        let has_data = (tcp.is_psh_ack() || (tcp.is_ack() && tcp.has_payload()))
+            && tcp.has_payload()
+            && tcp.flags & (packet::tcp::TCP_SYN | packet::tcp::TCP_RST | packet::tcp::TCP_URG)
+                == 0;
         if has_data {
             // HTTP (port 80)
             if tcp.is_http_port() && packet::http::is_http_request(tcp.payload) {

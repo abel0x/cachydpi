@@ -180,6 +180,12 @@ pub fn build_tcp_header(
 /// made to match. Every other header field, the IP ID and TTL among them, is
 /// the original's; callers that need them different set them afterwards.
 ///
+/// The one exception is FIN. It closes the stream after the original's last
+/// byte, so it stays only on a segment that ends where the original ends.
+/// Copied onto an earlier segment it would announce the end of the stream in
+/// the middle of it, and with the segments sent out of order the receiver
+/// could take it first.
+///
 /// None if `raw_packet` is shorter than the headers it is said to hold, or
 /// the result would not fit an IP length field.
 pub fn resegment(
@@ -189,10 +195,23 @@ pub fn resegment(
     payload: &[u8],
     seq: u32,
 ) -> Option<Vec<u8>> {
-    let headers = raw_packet.get(..ip_hdr_len.checked_add(tcp_hdr_len)?)?;
+    let header_len = ip_hdr_len.checked_add(tcp_hdr_len)?;
+    let headers = raw_packet.get(..header_len)?;
     let mut packet = Vec::with_capacity(headers.len() + payload.len());
     packet.extend_from_slice(headers);
     packet.extend_from_slice(payload);
+
+    let flags_at = ip_hdr_len + 13;
+    let flags = u8_at(&packet, flags_at)?;
+    if flags & TCP_FIN != 0 {
+        let original_seq = super::bytes::be32_at(raw_packet, ip_hdr_len + 4)?;
+        let original_len = raw_packet.len() - header_len;
+        let original_end = original_seq.wrapping_add(original_len as u32);
+        let end = seq.wrapping_add(payload.len() as u32);
+        if end != original_end {
+            super::bytes::put_u8(&mut packet, flags_at, flags & !TCP_FIN)?;
+        }
+    }
 
     super::ip::set_ip_lengths(&mut packet, ip_hdr_len)?;
     super::bytes::put_be32(&mut packet, ip_hdr_len + 4, seq)?;
