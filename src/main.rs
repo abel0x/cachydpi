@@ -646,6 +646,7 @@ fn run_dns(action: &cachydpi::cli::DnsAction) -> Result<()> {
         }
         DnsAction::Enable => {
             needs_root()?;
+            let _lock = dns::lock_changes()?;
             println!("Checking DNS-over-TLS servers on port 853...");
             dns::enable_with(&dns::System, &dns::bundled_servers())?;
             println!("DNS-over-TLS enabled ({})", dns::DROPIN_PATH);
@@ -654,6 +655,7 @@ fn run_dns(action: &cachydpi::cli::DnsAction) -> Result<()> {
         }
         DnsAction::Disable => {
             needs_root()?;
+            let _lock = dns::lock_changes()?;
             dns::disable_with(&dns::System)?;
             println!("DNS-over-TLS drop-in removed");
             print_dns_status(&dns::status());

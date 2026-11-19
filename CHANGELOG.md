@@ -20,6 +20,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   anything; whoever cannot get it exits without touching the tables. The
   kernel drops the lock when its holder exits, `SIGKILL` included. Separate
   network namespaces have separate locks.
+- `dns enable` rolls back on every failure after it writes the drop-in, and
+  puts back what was there. A failed restart of systemd-resolved returned
+  before any rollback, leaving the new strict drop-in to take effect at the
+  next restart or boot; and the rollback after a resolution failure deleted
+  the path, so a drop-in an administrator had written there was lost. The
+  earlier file is now saved first and restored with its content, mode and
+  owner, or removed if there was none. A rollback that fails is reported
+  as a separate error with what to restore by hand. Two `dns` commands can
+  no longer run at once.
 - The panic hook deletes the tables only if this process owns them. It
   deleted them unconditionally, including under `manage_rules = false`,
   where they belong to whoever ran `install-rules`.

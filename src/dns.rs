@@ -148,17 +148,34 @@ pub fn bundled_servers() -> Vec<IpAddr> {
         .collect()
 }
 
+/// A file as it was before a change: what to put back on rollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedFile {
+    pub content: Vec<u8>,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
 /// What enabling needs from the machine, behind a trait so the decision
 /// logic — refuse when 853 is blocked, roll back when resolution breaks —
 /// can be tested without root or a live resolver.
 pub trait Host {
     fn dot_port_reachable(&self, server: IpAddr) -> bool;
+    /// The drop-in as it is now, `None` if there is none.
+    fn read_dropin(&self) -> Result<Option<SavedFile>>;
     fn install_dropin(&self) -> Result<()>;
+    /// Put the drop-in back as `prior` describes: rewrite it with its old
+    /// content, mode and owner, or remove it if there was none.
+    fn restore_dropin(&self, prior: Option<&SavedFile>) -> Result<()>;
     fn remove_dropin(&self) -> Result<()>;
     fn restart_resolved(&self) -> Result<()>;
     /// Whether names resolve through the system resolver right now.
     fn resolution_works(&self) -> bool;
 }
+
+/// Earlier drop-in content short enough to print for manual recovery.
+const PRINTABLE_PRIOR_MAX: usize = 4096;
 
 /// Turn on strict DNS-over-TLS, or leave things as they were.
 pub fn enable_with(host: &dyn Host, servers: &[IpAddr]) -> Result<()> {
@@ -175,23 +192,55 @@ pub fn enable_with(host: &dyn Host, servers: &[IpAddr]) -> Result<()> {
         );
     }
 
-    host.install_dropin()?;
-    host.restart_resolved()?;
-    if host.resolution_works() {
-        return Ok(());
-    }
+    // Everything after the write is undone back to this, so a failed enable
+    // neither leaves a new file to take effect later nor loses one an
+    // administrator had put there.
+    let prior = host
+        .read_dropin()
+        .context("cannot read the current drop-in, so nothing was changed")?;
+    host.install_dropin()
+        .context("writing the drop-in failed; the file is unchanged")?;
+
+    let failure = match host.restart_resolved() {
+        Err(e) => e.context("restarting systemd-resolved with DNS-over-TLS on failed"),
+        Ok(()) if host.resolution_works() => return Ok(()),
+        Ok(()) => anyhow::anyhow!("names did not resolve with DNS-over-TLS on"),
+    };
 
     // Leave the machine as it was rather than without DNS.
-    let undo = host.remove_dropin().and_then(|_| host.restart_resolved());
-    match undo {
-        Ok(()) => {
-            bail!("names did not resolve with DNS-over-TLS on, so the change was rolled back")
-        }
-        Err(e) => bail!(
-            "names did not resolve with DNS-over-TLS on, and rolling back failed: {e:#} — \
-             remove {DROPIN_PATH} and run: systemctl restart systemd-resolved"
-        ),
+    let what_was_restored = match &prior {
+        Some(_) => format!("{DROPIN_PATH} was restored to its earlier content"),
+        None => format!("{DROPIN_PATH} was removed"),
+    };
+    if let Err(undo) = host.restore_dropin(prior.as_ref()) {
+        let by_hand = match &prior {
+            None => format!("remove {DROPIN_PATH}"),
+            Some(saved) => match std::str::from_utf8(&saved.content) {
+                Ok(text) if text.len() <= PRINTABLE_PRIOR_MAX => format!(
+                    "put this back in {DROPIN_PATH} (mode {:o}):\n{text}",
+                    saved.mode & 0o7777
+                ),
+                _ => format!("restore {DROPIN_PATH} from a backup"),
+            },
+        };
+        bail!(
+            "DNS-over-TLS was not enabled: {failure:#}\n\
+             Rolling back failed as well: {undo:#}\n\
+             {DROPIN_PATH} still holds the strict configuration. To recover, \
+             {by_hand}\nthen run: systemctl restart systemd-resolved"
+        );
     }
+    if let Err(restart) = host.restart_resolved() {
+        bail!(
+            "DNS-over-TLS was not enabled: {failure:#}\n\
+             {what_was_restored}, but restarting systemd-resolved failed as well: \
+             {restart:#}\nIt may still run with the strict configuration; run: \
+             systemctl restart systemd-resolved"
+        );
+    }
+    Err(failure.context(format!(
+        "DNS-over-TLS was not enabled; {what_was_restored} and systemd-resolved restarted"
+    )))
 }
 
 /// Remove this tool's drop-in. Other resolved settings are not touched.
@@ -206,6 +255,14 @@ pub struct System;
 impl Host for System {
     fn dot_port_reachable(&self, server: IpAddr) -> bool {
         TcpStream::connect_timeout(&SocketAddr::new(server, 853), Duration::from_secs(3)).is_ok()
+    }
+
+    fn read_dropin(&self) -> Result<Option<SavedFile>> {
+        read_file(Path::new(DROPIN_PATH))
+    }
+
+    fn restore_dropin(&self, prior: Option<&SavedFile>) -> Result<()> {
+        restore_file(Path::new(DROPIN_PATH), prior)
     }
 
     fn install_dropin(&self) -> Result<()> {
@@ -258,10 +315,69 @@ impl Host for System {
     }
 }
 
+/// Take `path` as it is now. A missing file is `None`; a symlink is refused,
+/// because restoring would replace the link with a regular file.
+fn read_file(path: &Path) -> Result<Option<SavedFile>> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("cannot stat {}", path.display())),
+    };
+    if !meta.file_type().is_file() {
+        bail!("{} is not a regular file; leaving it alone", path.display());
+    }
+    let content = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    Ok(Some(SavedFile {
+        content,
+        mode: meta.mode() & 0o7777,
+        uid: meta.uid(),
+        gid: meta.gid(),
+    }))
+}
+
+/// Put `path` back as `prior` says, atomically.
+fn restore_file(path: &Path, prior: Option<&SavedFile>) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let Some(saved) = prior else {
+        return match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("failed to remove {}", path.display())),
+        };
+    };
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("failed to create a temp file in {}", dir.display()))?;
+    tmp.write_all(&saved.content)
+        .and_then(|()| tmp.as_file().sync_all())
+        .with_context(|| format!("failed to write the earlier {}", path.display()))?;
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(saved.mode))
+        .with_context(|| format!("failed to set the mode of {}", path.display()))?;
+    // Only root can give a file away; as anyone else the owner is already ours.
+    if nix::unistd::geteuid().is_root() {
+        std::os::unix::fs::fchown(tmp.as_file(), Some(saved.uid), Some(saved.gid))
+            .with_context(|| format!("failed to set the owner of {}", path.display()))?;
+    }
+    tmp.persist(path)
+        .map_err(|e| anyhow::anyhow!("failed to replace {}: {}", path.display(), e))?;
+    Ok(())
+}
+
+/// Serialize `dns enable` and `dns disable`: one rolling back while another
+/// writes would delete or overwrite the other's file.
+pub fn lock_changes() -> Result<crate::lockfile::Held> {
+    let dir = Path::new(crate::lockfile::LOCK_DIR);
+    crate::lockfile::try_exclusive(dir, "dns.lock")?.ok_or_else(|| {
+        anyhow::anyhow!("another `cachydpi dns` command is changing the configuration; try again")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     #[test]
     fn the_last_setting_wins_and_unset_is_off() {
@@ -335,31 +451,90 @@ mod tests {
         assert!(servers.contains(&"9.9.9.9".parse().unwrap()));
     }
 
+    /// A drop-in and a resolver that fail where a test says.
     #[derive(Default)]
     struct Fake {
         reachable: bool,
         resolves: bool,
+        /// The drop-in: `None` is no file.
+        file: RefCell<Option<SavedFile>>,
+        fail_read: bool,
+        fail_install: bool,
+        fail_restore: bool,
+        /// Restart calls that fail, counted from 1.
+        failing_restarts: Vec<u32>,
+        restarts: Cell<u32>,
         log: RefCell<Vec<&'static str>>,
+    }
+
+    fn ours() -> SavedFile {
+        SavedFile {
+            content: DROPIN_CONTENT.as_bytes().to_vec(),
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+        }
+    }
+
+    fn custom() -> SavedFile {
+        SavedFile {
+            content: b"[Resolve]\nDNS=192.0.2.53#dns.example\nDNSOverTLS=yes\n".to_vec(),
+            mode: 0o640,
+            uid: 0,
+            gid: 42,
+        }
     }
 
     impl Host for Fake {
         fn dot_port_reachable(&self, _: IpAddr) -> bool {
             self.reachable
         }
+        fn read_dropin(&self) -> Result<Option<SavedFile>> {
+            self.log.borrow_mut().push("read");
+            if self.fail_read {
+                bail!("read failed");
+            }
+            Ok(self.file.borrow().clone())
+        }
         fn install_dropin(&self) -> Result<()> {
             self.log.borrow_mut().push("install");
+            if self.fail_install {
+                bail!("disk full");
+            }
+            *self.file.borrow_mut() = Some(ours());
+            Ok(())
+        }
+        fn restore_dropin(&self, prior: Option<&SavedFile>) -> Result<()> {
+            self.log.borrow_mut().push("restore");
+            if self.fail_restore {
+                bail!("read-only filesystem");
+            }
+            *self.file.borrow_mut() = prior.cloned();
             Ok(())
         }
         fn remove_dropin(&self) -> Result<()> {
             self.log.borrow_mut().push("remove");
+            *self.file.borrow_mut() = None;
             Ok(())
         }
         fn restart_resolved(&self) -> Result<()> {
             self.log.borrow_mut().push("restart");
+            let n = self.restarts.get() + 1;
+            self.restarts.set(n);
+            if self.failing_restarts.contains(&n) {
+                bail!("systemctl restart systemd-resolved failed");
+            }
             Ok(())
         }
         fn resolution_works(&self) -> bool {
             self.resolves
+        }
+    }
+
+    fn reachable() -> Fake {
+        Fake {
+            reachable: true,
+            ..Default::default()
         }
     }
 
@@ -372,26 +547,152 @@ mod tests {
     }
 
     #[test]
-    fn broken_resolution_is_rolled_back() {
+    fn working_resolution_is_kept() {
         let host = Fake {
-            reachable: true,
-            ..Default::default()
+            resolves: true,
+            ..reachable()
         };
-        assert!(enable_with(&host, &bundled_servers()).is_err());
-        assert_eq!(
-            *host.log.borrow(),
-            ["install", "restart", "remove", "restart"]
-        );
+        enable_with(&host, &bundled_servers()).unwrap();
+        assert_eq!(*host.log.borrow(), ["read", "install", "restart"]);
+        assert_eq!(*host.file.borrow(), Some(ours()));
     }
 
     #[test]
-    fn working_resolution_is_kept() {
+    fn broken_resolution_is_rolled_back() {
+        let host = reachable();
+        let err = enable_with(&host, &bundled_servers()).unwrap_err();
+        assert_eq!(
+            *host.log.borrow(),
+            ["read", "install", "restart", "restore", "restart"]
+        );
+        assert_eq!(*host.file.borrow(), None, "no new file may be left behind");
+        assert!(format!("{err:#}").contains("did not resolve"), "{err:#}");
+    }
+
+    /// The regression: a failed restart returned before any rollback, and
+    /// the new file stayed to take effect at the next restart or boot.
+    #[test]
+    fn a_failed_restart_is_rolled_back_too() {
         let host = Fake {
-            reachable: true,
+            failing_restarts: vec![1],
             resolves: true,
-            ..Default::default()
+            ..reachable()
         };
-        enable_with(&host, &bundled_servers()).unwrap();
-        assert_eq!(*host.log.borrow(), ["install", "restart"]);
+        let err = enable_with(&host, &bundled_servers()).unwrap_err();
+        assert_eq!(
+            *host.log.borrow(),
+            ["read", "install", "restart", "restore", "restart"]
+        );
+        assert_eq!(*host.file.borrow(), None);
+        assert!(
+            format!("{err:#}").contains("restarting systemd-resolved"),
+            "{err:#}"
+        );
+    }
+
+    /// The regression: rollback removed the path, so a drop-in the
+    /// administrator had written there was deleted.
+    #[test]
+    fn an_earlier_file_is_put_back_not_deleted() {
+        for failing_restarts in [vec![], vec![1]] {
+            let host = Fake {
+                file: RefCell::new(Some(custom())),
+                failing_restarts,
+                ..reachable()
+            };
+            let err = enable_with(&host, &bundled_servers()).unwrap_err();
+            assert_eq!(*host.file.borrow(), Some(custom()));
+            assert!(
+                format!("{err:#}").contains("restored to its earlier content"),
+                "{err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_written_when_the_current_file_cannot_be_read() {
+        let host = Fake {
+            fail_read: true,
+            ..reachable()
+        };
+        assert!(enable_with(&host, &bundled_servers()).is_err());
+        assert_eq!(*host.log.borrow(), ["read"]);
+    }
+
+    #[test]
+    fn a_failed_write_needs_no_rollback() {
+        let host = Fake {
+            fail_install: true,
+            file: RefCell::new(Some(custom())),
+            ..reachable()
+        };
+        let err = enable_with(&host, &bundled_servers()).unwrap_err();
+        assert_eq!(*host.log.borrow(), ["read", "install"]);
+        assert!(format!("{err:#}").contains("unchanged"), "{err:#}");
+    }
+
+    /// A rollback that fails is reported as its own failure, with what to
+    /// put back by hand, never as a clean rollback.
+    #[test]
+    fn a_failed_rollback_says_so_and_how_to_recover() {
+        let restore_fails = Fake {
+            fail_restore: true,
+            file: RefCell::new(Some(custom())),
+            ..reachable()
+        };
+        let err = format!(
+            "{:#}",
+            enable_with(&restore_fails, &bundled_servers()).unwrap_err()
+        );
+        assert!(err.contains("did not resolve"), "{err}");
+        assert!(
+            err.contains("Rolling back failed as well: read-only filesystem"),
+            "{err}"
+        );
+        assert!(err.contains("DNS=192.0.2.53#dns.example"), "{err}");
+        assert!(err.contains("mode 640"), "{err}");
+        assert!(!err.contains("was restored"), "{err}");
+
+        let second_restart_fails = Fake {
+            failing_restarts: vec![2],
+            ..reachable()
+        };
+        let err = format!(
+            "{:#}",
+            enable_with(&second_restart_fails, &bundled_servers()).unwrap_err()
+        );
+        assert!(err.contains("was removed, but restarting"), "{err}");
+        assert_eq!(*second_restart_fails.file.borrow(), None);
+    }
+
+    #[test]
+    fn a_file_is_restored_with_its_content_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.conf");
+        std::fs::write(&path, "before\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let saved = read_file(&path).unwrap().expect("exists");
+        std::fs::write(&path, "after\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        restore_file(&path, Some(&saved)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "before\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o640);
+
+        restore_file(&path, None).unwrap();
+        assert!(!path.exists());
+        restore_file(&path, None).expect("removing what is gone is fine");
+        assert_eq!(read_file(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn a_symlinked_dropin_is_not_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.conf");
+        std::os::unix::fs::symlink("/etc/hostname", &path).unwrap();
+        assert!(read_file(&path).is_err());
     }
 }

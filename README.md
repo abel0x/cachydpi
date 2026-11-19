@@ -326,7 +326,7 @@ sudo cachydpi dns enable     # DNS-over-TLS via systemd-resolved
 sudo cachydpi dns disable    # remove what enable installed
 ```
 
-`enable` installs the bundled drop-in (`dns-over-tls.conf`: Cloudflare and Google, Quad9 fallback) as `/etc/systemd/resolved.conf.d/cachydpi-dns-over-tls.conf`. It uses the strict `DNSOverTLS=yes`, because opportunistic mode falls back to plaintext — the poisoned path. Strict mode with port 853 blocked would leave the machine without DNS, so `enable` first checks that the servers answer on 853 and changes nothing if none do, then restarts systemd-resolved and rolls back if names stop resolving. It requires `/etc/resolv.conf` to point at systemd-resolved (`127.0.0.53`), which is the default on CachyOS and Arch with systemd-resolved enabled.
+`enable` installs the bundled drop-in (`dns-over-tls.conf`: Cloudflare and Google, Quad9 fallback) as `/etc/systemd/resolved.conf.d/cachydpi-dns-over-tls.conf`. It uses the strict `DNSOverTLS=yes`, because opportunistic mode falls back to plaintext — the poisoned path. Strict mode with port 853 blocked would leave the machine without DNS, so `enable` first checks that the servers answer on 853 and changes nothing if none do, then restarts systemd-resolved and rolls back if the restart fails or names stop resolving. Rolling back puts the drop-in back exactly as it was, content, mode and owner, or removes it if there was none; if the rollback itself fails, the error says so and prints what to restore by hand. It requires `/etc/resolv.conf` to point at systemd-resolved (`127.0.0.53`), which is the default on CachyOS and Arch with systemd-resolved enabled.
 
 ## Troubleshooting
 
