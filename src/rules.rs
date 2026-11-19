@@ -283,11 +283,6 @@ impl Drop for NftRules {
     }
 }
 
-/// Where the rules-ownership lock lives. Under systemd this is the unit's
-/// `RuntimeDirectory`, the one place `ProtectSystem=strict` leaves writable;
-/// only root and the service user can write to it.
-pub const OWNER_LOCK_DIR: &str = "/run/cachydpi";
-
 /// Exclusive ownership of the `cachydpi` tables in this network namespace.
 ///
 /// Every instance uses the same table names, and installing starts by
@@ -298,69 +293,35 @@ pub const OWNER_LOCK_DIR: &str = "/run/cachydpi";
 /// to change the tables takes this first and holds it for as long as it may
 /// touch them, and a process that cannot get it leaves them alone.
 ///
-/// The lock is an `flock` on `rules-<netns inode>.lock`: the inode of
-/// `/proc/self/ns/net` names the network namespace, so instances in separate
-/// namespaces, whose tables are separate too, do not exclude each other.
-/// The kernel releases it when the holder exits however it exits, a panic
-/// with `panic = "abort"` and `SIGKILL` included, so there is no stale state
-/// to recover. The file is mode 0600 and owned by the directory's owner: a
-/// lock any account could open would be one any account could hold, keeping
-/// the daemon from starting.
+/// The lock is `rules-<netns inode>.lock` (see [`crate::lockfile`]): the inode
+/// of `/proc/self/ns/net` names the network namespace, so instances in
+/// separate namespaces, whose tables are separate too, do not exclude each
+/// other.
 pub struct RulesOwner {
-    _lock: nix::fcntl::Flock<std::fs::File>,
+    _held: crate::lockfile::Held,
 }
 
 impl RulesOwner {
-    /// Take ownership in [`OWNER_LOCK_DIR`], or fail without waiting.
+    /// Take ownership in [`crate::lockfile::LOCK_DIR`], or fail without waiting.
     pub fn acquire() -> Result<Self> {
-        Self::acquire_in(std::path::Path::new(OWNER_LOCK_DIR))
+        Self::acquire_in(std::path::Path::new(crate::lockfile::LOCK_DIR))
     }
 
     /// Take ownership with the lock file in `dir`.
     pub fn acquire_in(dir: &std::path::Path) -> Result<Self> {
-        use nix::errno::Errno;
-        use nix::fcntl::{Flock, FlockArg};
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-
+        use std::os::unix::fs::MetadataExt;
         let netns = std::fs::metadata("/proc/self/ns/net")
             .context("cannot identify this network namespace (/proc/self/ns/net)")?
             .ino();
-
-        match std::fs::DirBuilder::new().mode(0o755).create(dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => {
-                return Err(e).with_context(|| format!("cannot create {}", dir.display()));
-            }
-        }
-        let path = dir.join(format!("rules-{netns}.lock"));
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .with_context(|| format!("cannot open the rules lock {}", path.display()))?;
-
-        // A root run may create the file; hand it to the directory's owner so
-        // the service user can still open it afterwards. Only root can change
-        // the owner, and nobody else needs to.
-        if let (Ok(d), Ok(f)) = (std::fs::metadata(dir), file.metadata())
-            && (f.uid(), f.gid()) != (d.uid(), d.gid())
-        {
-            let _ = std::os::unix::fs::fchown(&file, Some(d.uid()), Some(d.gid()));
-        }
-
-        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
-            Ok(lock) => Ok(RulesOwner { _lock: lock }),
-            Err((_, Errno::EWOULDBLOCK)) => bail!(
+        let name = format!("rules-{netns}.lock");
+        match crate::lockfile::try_exclusive(dir, &name)? {
+            Some(held) => Ok(RulesOwner { _held: held }),
+            None => bail!(
                 "another cachydpi process owns the nftables tables in this network \
                  namespace (lock {}), so they were left untouched. Stop it first: \
                  `systemctl status cachydpi` shows whether it is the service",
-                path.display()
+                dir.join(name).display()
             ),
-            Err((_, e)) => Err(e).with_context(|| format!("cannot lock {}", path.display())),
         }
     }
 }
@@ -583,20 +544,6 @@ mod tests {
         );
         drop(first);
         RulesOwner::acquire_in(dir.path()).expect("free again once the owner is gone");
-    }
-
-    #[test]
-    fn the_lock_file_is_closed_to_other_accounts() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let _owner = RulesOwner::acquire_in(dir.path()).unwrap();
-        let lock = std::fs::read_dir(dir.path())
-            .unwrap()
-            .next()
-            .expect("a lock file")
-            .unwrap();
-        assert!(lock.file_name().to_string_lossy().starts_with("rules-"));
-        assert_eq!(lock.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     /// Acceptance criterion end to end: start(ipv6) → stop → start(no ipv6) →

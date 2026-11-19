@@ -13,6 +13,7 @@ pub mod escalation;
 pub mod flow_ttl;
 pub mod handshake_watch;
 pub mod hello_resume;
+pub mod lockfile;
 pub mod logging;
 pub mod metrics;
 pub mod metrics_server;
