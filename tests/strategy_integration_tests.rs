@@ -2764,3 +2764,162 @@ mod auto_detect_escalation {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  Domain selection is honoured by every active technique
+// ═══════════════════════════════════════════════════════════════════
+
+mod domain_selection_matrix {
+    use super::*;
+
+    const LISTED: &str = "listed.example";
+
+    fn filtered(mode: DomainMode) -> Config {
+        let mut c = config_with_fake_packets();
+        c.domains.mode = mode;
+        c.domain_set = [LISTED.to_string()].into_iter().collect();
+        c
+    }
+
+    fn http_with_headers(headers: &str) -> Vec<u8> {
+        let payload = format!("GET / HTTP/1.1\r\n{headers}\r\n");
+        build_ipv4_tcp_packet(
+            Ipv4Addr::new(192, 168, 1, 100),
+            Ipv4Addr::new(93, 184, 216, 34),
+            12345,
+            80,
+            1000,
+            500,
+            tcp::TCP_PSH | tcp::TCP_ACK,
+            64,
+            payload.as_bytes(),
+        )
+    }
+
+    fn outbound(engine: &StrategyEngine, raw: &[u8]) -> PacketAction {
+        engine.evaluate_outbound(&ParsedPacket::parse(raw, Direction::Outbound).unwrap())
+    }
+
+    /// Modes 1–7 against each filter and each kind of name: whenever the
+    /// filter does not select the connection, no mode may touch the packet.
+    /// Before, HTTP without a usable Host, and TLS in mode 4, skipped the
+    /// filter and were modified anyway.
+    #[test]
+    fn an_unselected_connection_is_never_modified() {
+        let requests = [
+            (
+                "listed Host",
+                http_with_headers(&format!("Host: {LISTED}\r\n")),
+            ),
+            ("other Host", http_with_headers("Host: other.example\r\n")),
+            ("no Host", http_with_headers("Connection: close\r\n")),
+            ("cut-off Host", {
+                // The segment ends inside the value.
+                build_ipv4_tcp_packet(
+                    Ipv4Addr::new(192, 168, 1, 100),
+                    Ipv4Addr::new(93, 184, 216, 34),
+                    12345,
+                    80,
+                    1000,
+                    500,
+                    tcp::TCP_PSH | tcp::TCP_ACK,
+                    64,
+                    format!("GET / HTTP/1.1\r\nHost: {LISTED}").as_bytes(),
+                )
+            }),
+            (
+                "Host with port",
+                http_with_headers(&format!("Host: {LISTED}:80\r\n")),
+            ),
+            (
+                "Host without OWS",
+                http_with_headers(&format!("Host:{LISTED}\r\n")),
+            ),
+            ("listed SNI", build_tls_packet(LISTED, 64)),
+            ("other SNI", build_tls_packet("other.example", 64)),
+        ];
+        let name_of = |what: &str| match what {
+            "listed Host" | "Host with port" | "Host without OWS" | "listed SNI" => Some(LISTED),
+            "other Host" | "other SNI" => Some("other.example"),
+            _ => None,
+        };
+
+        for filter in [DomainMode::Blacklist, DomainMode::Exempt] {
+            let config = filtered(filter);
+            for mode in 1..=7 {
+                let engine =
+                    StrategyEngine::new(BypassMode::from_mode_number(mode), config.clone());
+                for (what, raw) in &requests {
+                    if config.should_process_name(name_of(what)) {
+                        continue;
+                    }
+                    let action = outbound(&engine, raw);
+                    assert!(
+                        matches!(action, PacketAction::Accept),
+                        "{filter:?} mode {mode} {what}: modified although not selected: {action:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The selected side still gets the bypass, including mode 4's fakes.
+    #[test]
+    fn a_selected_connection_still_gets_the_bypass() {
+        let blacklist = filtered(DomainMode::Blacklist);
+        let fake = StrategyEngine::new(BypassMode::FakePacket, blacklist.clone());
+        assert!(matches!(
+            outbound(&fake, &build_tls_packet(LISTED, 64)),
+            PacketAction::InjectThenAccept(_)
+        ));
+        let http = StrategyEngine::new(BypassMode::HttpFragment, blacklist);
+        for headers in [
+            format!("Host:{LISTED}\r\n"),
+            format!("Host: {LISTED}:80\r\n"),
+        ] {
+            let action = outbound(&http, &http_with_headers(&headers));
+            assert!(
+                matches!(action, PacketAction::Fragment(_)),
+                "{headers:?}: {action:?}"
+            );
+        }
+    }
+
+    /// With `mode = "none"` nothing is filtered, unknown names included.
+    #[test]
+    fn without_a_filter_an_unknown_host_is_still_processed() {
+        let engine = StrategyEngine::new(BypassMode::HttpFragment, default_config());
+        let action = outbound(&engine, &http_with_headers("Connection: close\r\n"));
+        assert!(matches!(action, PacketAction::Fragment(_)), "{action:?}");
+    }
+
+    /// The SYN window and QUIC desync act before any name is readable, so a
+    /// filter turns them off instead of letting them apply to every site.
+    #[test]
+    fn techniques_without_a_name_stay_off_under_a_filter() {
+        let mut quic = filtered(DomainMode::Blacklist);
+        quic.strategies.quic_desync = true;
+        assert!(!cachydpi::strategies::quic_desync_active(
+            BypassMode::Aggressive,
+            &quic
+        ));
+        let engine = StrategyEngine::new(BypassMode::Aggressive, quic.clone());
+        let action = outbound(&engine, &build_quic_initial_packet());
+        assert!(matches!(action, PacketAction::Accept), "{action:?}");
+        quic.domains.mode = DomainMode::None;
+        assert!(cachydpi::strategies::quic_desync_active(
+            BypassMode::Aggressive,
+            &quic
+        ));
+
+        let mut window = filtered(DomainMode::Exempt);
+        window.strategies.tcp_window_size = 2;
+        let engine = StrategyEngine::new(BypassMode::AllActive, window.clone());
+        let action = outbound(&engine, &build_syn_packet(443));
+        assert!(matches!(action, PacketAction::Accept), "{action:?}");
+        window.domains.mode = DomainMode::None;
+        let engine = StrategyEngine::new(BypassMode::AllActive, window);
+        let action = outbound(&engine, &build_syn_packet(443));
+        assert!(matches!(action, PacketAction::Modify(_)), "{action:?}");
+    }
+}

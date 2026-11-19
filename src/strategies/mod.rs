@@ -148,8 +148,14 @@ impl BypassMode {
 ///
 /// Mode 7 escalates TCP techniques only and, like mode 5, leaves QUIC alone. The nftables rules use the same answer to decide whether QUIC
 /// is queued at all.
+///
+/// Not under a domain filter: the server name of a QUIC connection is inside
+/// an Initial packet encrypted for the server, so there is no name to select
+/// by, and desynchronizing every QUIC connection would ignore the selection.
 pub fn quic_desync_active(mode: BypassMode, config: &Config) -> bool {
-    matches!(mode, BypassMode::Aggressive) && config.strategies.quic_desync
+    matches!(mode, BypassMode::Aggressive)
+        && config.strategies.quic_desync
+        && !config.filters_by_name()
 }
 
 /// The initial TTL a server most likely used: 64, 128 or 255.
@@ -426,19 +432,9 @@ impl StrategyEngine {
         packet: &ParsedPacket<'_>,
         tcp: &packet::tcp::TcpHeader<'_>,
     ) -> PacketAction {
-        // Check domain filter for HTTP
-        if let Some(http_req) = packet::http::HttpRequest::parse(tcp.payload)
-            && let Some(ref host) = http_req.host
-        {
-            if !self.config.should_process_domain(host) {
-                METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
-                debug!(
-                    domain = %crate::logging::peer(host.as_str()),
-                    "HTTP domain not in filter list, skipping"
-                );
-                return PacketAction::Accept;
-            }
-            METRICS.domains_matched.fetch_add(1, Ordering::Relaxed);
+        let host = packet::http::HttpRequest::parse(tcp.payload).and_then(|r| r.host);
+        if !self.name_selected(host.as_deref(), "HTTP") {
+            return PacketAction::Accept;
         }
 
         match self.mode {
@@ -534,12 +530,48 @@ impl StrategyEngine {
                 self.split_client_hello(packet, tcp, &hello, false)
             }
             BypassMode::FakePacket => {
+                // The splitting modes reach the filter in split_client_hello;
+                // this one sends its fakes from here, so it asks here.
+                let sni = packet::tls::TlsClientHello::parse(tcp.payload).and_then(|h| h.sni);
+                if !self.name_selected(sni.as_deref(), "TLS") {
+                    return PacketAction::Accept;
+                }
                 if let Some(fakes) = self.create_fakes_for(packet, tcp) {
                     return PacketAction::InjectThenAccept(fakes);
                 }
                 PacketAction::Accept
             }
         }
+    }
+
+    /// Ask the domain filter about a connection's name, which may be unknown,
+    /// and count and log the answer. Every active technique goes through here
+    /// before it changes a packet (see Config::should_process_name).
+    fn name_selected(&self, name: Option<&str>, protocol: &str) -> bool {
+        if self.config.should_process_name(name) {
+            if name.is_some() {
+                METRICS.domains_matched.fetch_add(1, Ordering::Relaxed);
+                debug!(
+                    domain = %crate::logging::peer(name.unwrap_or_default()),
+                    protocol,
+                    "domain matched, applying strategy"
+                );
+            }
+            return true;
+        }
+        METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
+        match name {
+            Some(name) => debug!(
+                domain = %crate::logging::peer(name),
+                protocol,
+                "domain not selected by the filter, skipping"
+            ),
+            None => debug!(
+                protocol,
+                "server name unknown in this segment, skipping under the domain filter"
+            ),
+        }
+        false
     }
 
     /// In mode 7, move the destination of an inbound forged packet up a level.
@@ -717,19 +749,11 @@ impl StrategyEngine {
                 METRICS.sni_syntax_invalid.fetch_add(1, Ordering::Relaxed);
             }
 
-            if !self.config.should_process_domain(sni) {
-                METRICS.domains_skipped.fetch_add(1, Ordering::Relaxed);
-                debug!(
-                    domain = %crate::logging::peer(sni.as_str()),
-                    "domain not in filter list, skipping"
-                );
+            if !self.name_selected(Some(sni), "TLS") {
                 return PacketAction::Accept;
             }
-            METRICS.domains_matched.fetch_add(1, Ordering::Relaxed);
-            debug!(
-                domain = %crate::logging::peer(sni.as_str()),
-                "domain matched, applying TLS strategy"
-            );
+        } else if !self.name_selected(None, "TLS") {
+            return PacketAction::Accept;
         }
 
         // ── Desync-first approach (Mode 5+): fake CH → multi-fragment → disorder ──
@@ -976,7 +1000,10 @@ impl StrategyEngine {
             (
                 "TCP window size",
                 (!self.should_modify_window()).then_some({
-                    if s.tcp_window_size > 0 {
+                    if s.tcp_window_size > 0 && self.config.filters_by_name() {
+                        "set on the SYN, before the server name is known, so it cannot \
+                         follow the domain filter; needs [domains] mode = \"none\""
+                    } else if s.tcp_window_size > 0 {
                         "not applied in this mode"
                     } else {
                         "[strategies] tcp_window_size = 0"
@@ -986,7 +1013,10 @@ impl StrategyEngine {
             (
                 "QUIC desync",
                 (!quic_active).then_some({
-                    if s.quic_desync {
+                    if s.quic_desync && self.config.filters_by_name() {
+                        "the server name is encrypted in a QUIC Initial, so it cannot \
+                         follow the domain filter; needs [domains] mode = \"none\""
+                    } else if s.quic_desync {
                         "only applied in mode 6 (aggressive)"
                     } else {
                         "[strategies] quic_desync = false"
@@ -995,13 +1025,21 @@ impl StrategyEngine {
             ),
         ] {
             if let Some(reason) = reason {
-                info!(technique = name, reason = reason, "technique not active");
+                // Switched on in the config and still off: worth a warning.
+                if reason.contains("[domains]") {
+                    warn!(technique = name, reason = reason, "technique not active");
+                } else {
+                    info!(technique = name, reason = reason, "technique not active");
+                }
             }
         }
     }
 
+    /// Not under a domain filter: the window is set on the SYN, before the
+    /// connection has named its server, so it would apply to every site.
     fn should_modify_window(&self) -> bool {
         self.config.strategies.tcp_window_size > 0
+            && !self.config.filters_by_name()
             && matches!(
                 self.mode,
                 BypassMode::AllActive

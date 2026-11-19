@@ -20,6 +20,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   anything; whoever cannot get it exits without touching the tables. The
   kernel drops the lock when its holder exits, `SIGKILL` included. Separate
   network namespaces have separate locks.
+- Every active technique now honours the domain filter, and a connection
+  whose name is not known is left alone under `blacklist` and `exempt`.
+  HTTP requests with no usable Host header went through the filter
+  unchecked and were fragmented whatever the list said, and mode 4 sent
+  its fake packets for any ClientHello, listed or not. An HTTP request
+  counts as unnamed when it has no Host header, two of them, a folded one,
+  or one the segment cuts off; with `mode = "none"` nothing changes.
+- The Host header is read only from the header block, accepts any spacing
+  around the value (`Host:example.com` was missed), and is compared without
+  its port or a trailing dot, so `example.com:8080` matches a listed
+  `example.com`.
+- `tcp_window_size` and `quic_desync` are not applied under a domain
+  filter, and a warning at startup says why. The first is set on the SYN,
+  before the server is named, and the second works on a QUIC Initial whose
+  server name is encrypted; under `blacklist` or `exempt` both applied to
+  every connection. Both still work with `mode = "none"`.
 - `dns enable` rolls back on every failure after it writes the drop-in, and
   puts back what was there. A failed restart of systemd-resolved returned
   before any rollback, leaving the new strict drop-in to take effect at the

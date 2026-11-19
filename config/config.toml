@@ -32,6 +32,9 @@ passive_dpi = true
 
 # TCP window size (for SYN packets, 0 = disabled)
 # A low value forces the server to send small segments
+# Needs [domains] mode = "none": the SYN goes out before the connection names
+# its server, so the window cannot follow a domain filter and is not applied
+# under one.
 tcp_window_size = 0
 
 # HTTP request split position (0 = auto, middle of Host header)
@@ -82,7 +85,9 @@ fake_wrong_seq = false
 # QUIC/UDP desynchronization (UDP port 443)
 # WARNING: Many ISPs reassemble IP fragments before DPI inspection.
 # IPv6 does not support sender-side fragmentation. Disabled by default.
-# Applies in mode 6 only.
+# Applies in mode 6 only, and needs [domains] mode = "none": the server name is
+# encrypted in the QUIC Initial, so desync cannot follow a domain filter and is
+# not applied under one.
 quic_desync = false
 
 # ── Advanced DPI bypass (desync) ──

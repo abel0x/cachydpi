@@ -361,24 +361,28 @@ mod http_fuzzing {
         assert_eq!(parsed.host.as_deref(), Some("example.com"));
     }
 
+    /// A value the segment ends inside may be the start of a longer name:
+    /// `example.com` could be `example.com.evil`. It is unknown, not judged.
     #[test]
     fn host_at_very_end_no_crlf() {
         let req = b"GET / HTTP/1.1\r\nHost: example.com";
-        let parsed = http::HttpRequest::parse(req);
-        if let Some(p) = parsed {
-            assert_eq!(p.host.as_deref(), Some("example.com"));
-        }
+        let p = http::HttpRequest::parse(req).unwrap();
+        assert_eq!(p.host, None);
+        assert_eq!(p.host_offset, Some(22), "the position still guides a split");
     }
 
+    /// Obsolete line folding continues the value on the next line, so the
+    /// first line alone does not say which host it is.
     #[test]
     fn multiline_host_header_folding() {
-        // Obsolete HTTP/1.1 line folding
         let req = b"GET / HTTP/1.1\r\nHost: example\r\n .com\r\n\r\n";
-        let parsed = http::HttpRequest::parse(req);
-        if let Some(p) = parsed {
-            // Parser reads until \r\n, so host will be just "example"
-            assert_eq!(p.host.as_deref(), Some("example"));
-        }
+        assert_eq!(http::HttpRequest::parse(req).unwrap().host, None);
+        // A fold under a different header says nothing about the host.
+        let other = b"GET / HTTP/1.1\r\nHost: example.com\r\nX-A: 1\r\n 2\r\n\r\n";
+        assert_eq!(
+            http::HttpRequest::parse(other).unwrap().host.as_deref(),
+            Some("example.com")
+        );
     }
 
     #[test]
@@ -463,26 +467,64 @@ mod http_fuzzing {
         assert_eq!(parsed.host.as_deref(), Some("example.com"));
     }
 
+    /// The filter compares names; a port is not part of one.
     #[test]
     fn host_with_port() {
-        let req = b"GET / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n";
-        let parsed = http::HttpRequest::parse(req).unwrap();
-        assert_eq!(parsed.host.as_deref(), Some("example.com:8080"));
+        for (value, host) in [
+            ("example.com:8080", Some("example.com")),
+            ("Example.COM.:80", Some("example.com")),
+            ("example.com:", Some("example.com")),
+            ("[2001:db8::1]:8080", Some("2001:db8::1")),
+            ("[2001:db8::1]", Some("2001:db8::1")),
+            ("example.com:http", None),
+            ("2001:db8::1", None),
+        ] {
+            let req = format!("GET / HTTP/1.1\r\nHost: {value}\r\n\r\n");
+            let parsed = http::HttpRequest::parse(req.as_bytes()).unwrap();
+            assert_eq!(parsed.host.as_deref(), host, "{value}");
+        }
     }
 
+    /// Two Host headers is a request servers reject (RFC 9112 3.2), and
+    /// there is no telling which one a DPI reads.
     #[test]
     fn multiple_host_headers() {
-        // Only first Host should be returned (parser breaks after first match)
         let req = b"GET / HTTP/1.1\r\nHost: first.com\r\nHost: second.com\r\n\r\n";
         let parsed = http::HttpRequest::parse(req).unwrap();
-        assert_eq!(parsed.host.as_deref(), Some("first.com"));
+        assert_eq!(parsed.host, None);
     }
 
     #[test]
     fn host_empty_value() {
         let req = b"GET / HTTP/1.1\r\nHost: \r\n\r\n";
         let parsed = http::HttpRequest::parse(req).unwrap();
-        assert_eq!(parsed.host.as_deref(), Some(""));
+        assert_eq!(parsed.host, None);
+    }
+
+    /// RFC 9110 OWS: no space, several, or tabs around the value.
+    #[test]
+    fn host_with_optional_whitespace() {
+        for line in [
+            "Host:example.com",
+            "Host:\t example.com \t",
+            "host:  example.com",
+        ] {
+            let req = format!("GET / HTTP/1.1\r\n{line}\r\n\r\n");
+            let parsed = http::HttpRequest::parse(req.as_bytes()).unwrap();
+            assert_eq!(parsed.host.as_deref(), Some("example.com"), "{line:?}");
+        }
+    }
+
+    /// The header block ends at the blank line; a body is not headers.
+    #[test]
+    fn host_in_the_body_is_not_the_host() {
+        let req = b"POST / HTTP/1.1\r\nContent-Length: 22\r\n\r\n\r\nHost: example.com\r\n";
+        assert_eq!(http::HttpRequest::parse(req).unwrap().host, None);
+        let named = b"GET / HTTP/1.1\r\nX-Original-Host: other.com\r\nHost: example.com\r\n\r\n";
+        assert_eq!(
+            http::HttpRequest::parse(named).unwrap().host.as_deref(),
+            Some("example.com")
+        );
     }
 }
 

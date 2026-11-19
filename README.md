@@ -259,6 +259,8 @@ Domain matching is by **exact domain or a true subdomain** (label-boundary), nev
 - **`blacklist`** — apply the bypass **only** to listed domains. This is the shipped default, paired with `blacklist.txt`.
 - **`exempt`** — apply the bypass to **everything except** the listed domains. Must not be empty: an empty exemption list would bypass every site, which is what `none` is for. (Called `whitelist` before v1.1.0; that spelling is refused since v1.2.0.)
 
+With `blacklist` or `exempt`, every technique that changes a packet asks the filter first, and a connection whose name the packet does not settle is left alone: an HTTP request with no Host header, two of them, or one the segment cuts off, and a ClientHello whose SNI is not in that segment. The Host value is compared without its port or a trailing dot (`Example.COM.:8080` is `example.com`). Two opt-in techniques act before any name is readable and are therefore off under a filter, with a warning at startup: `tcp_window_size` is set on the SYN, and `quic_desync` works on a QUIC Initial whose server name is encrypted. Both need `mode = "none"`.
+
 Domain-list file paths are restricted to `/etc/cachydpi/` and `/usr/share/cachydpi/` and are canonicalized to reject symlink/`..` escapes (see [SECURITY.md](SECURITY.md)).
 
 ### CLI options

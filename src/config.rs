@@ -639,6 +639,27 @@ impl Config {
         }
     }
 
+    /// Whether `[domains] mode` selects connections by name at all.
+    pub fn filters_by_name(&self) -> bool {
+        self.domains.mode != DomainMode::None
+    }
+
+    /// The domain decision every active technique goes through, for a name
+    /// that may not be known.
+    ///
+    /// With a filter in force an unknown name is left alone, in both
+    /// directions of it: under `blacklist` it cannot be shown to be listed,
+    /// and under `exempt` it may be one of the sites the operator exempted,
+    /// typically because the bypass breaks them. A request whose name the
+    /// packet does not settle carries nothing for a name-matching DPI to read
+    /// in that packet either. With `mode = "none"` every connection is in.
+    pub fn should_process_name(&self, name: Option<&str>) -> bool {
+        match name {
+            Some(name) => self.should_process_domain(name),
+            None => !self.filters_by_name(),
+        }
+    }
+
     /// Whether `domain` or one of its parent domains is listed.
     ///
     /// `domain` comes straight off the wire (an SNI or a Host header, already
