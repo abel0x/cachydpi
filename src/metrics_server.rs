@@ -40,11 +40,11 @@ pub fn run_metrics_server(shutdown: &AtomicBool) {
     // Readable by any local user so `cachydpi monitor` needs no privileges.
     //
     // That is only acceptable because the snapshot carries counters and recent
-    // events, and the events no longer name peers unless
-    // [logging] log_identifying_fields is on — they used to embed the address
-    // of every DPI-forged packet's source, which made this socket a second
-    // route to the same browsing data the journal was leaking. Anything added
-    // to the snapshot has to stay safe to hand to an unprivileged process.
+    // events, and event messages are fixed strings that never name a peer,
+    // whatever [logging] log_identifying_fields says. They used to embed the
+    // address of every DPI-forged packet's source, which made this socket a
+    // second route to the browsing data the journal records. Anything added to
+    // the snapshot has to stay safe to hand to an unprivileged process.
     let _ = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o666));
 
     // Non-blocking accept so we can check shutdown flag periodically
