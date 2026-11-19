@@ -131,7 +131,7 @@ sudo setcap cap_net_admin,cap_net_raw=eip /usr/bin/cachydpi
 cachydpi monitor        # no root required
 ```
 
-The TUI connects to the daemon's Unix socket (`/run/cachydpi/metrics.sock`, fallback `/tmp/cachydpi-metrics.sock`) and shows packet counters, strategy hits, passive-defense drops, and process CPU/RAM. The socket is read-only (daemon → monitor); the monitor cannot control the daemon.
+The TUI connects to the daemon's Unix socket (`/run/cachydpi/metrics.sock`, fallback `/tmp/cachydpi-metrics.sock`) and shows packet counters, strategy hits, passive-defense drops, and process CPU/RAM. The socket is read-only (daemon → monitor); the monitor cannot control the daemon. Any local account can create the `/tmp` fallback while no daemon holds it, so when the monitor finds the socket there it believes it only if it is served by root or by you; pass the path as an argument (`cachydpi-monitor /path/to.sock`) to connect to anything else.
 
 ### Subcommands
 

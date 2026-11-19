@@ -16,6 +16,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   socket. Event messages are now fixed text ("forged RST dropped" and so
   on) in both modes; the address is still in the `debug` log line when the
   switch is on.
+- The monitor no longer believes whoever binds `/tmp/cachydpi-metrics.sock`.
+  When `/run/cachydpi/metrics.sock` was absent it connected to the `/tmp`
+  fallback, which any local account can create, and showed what it was
+  sent. A socket found there is now accepted only from root or the user
+  running the monitor; an explicit path argument still connects anywhere.
+- The monitor bounds every reply: 256 KiB at most, and 3 seconds for the
+  whole reply. The old 3-second timeout applied to each read, so a sender
+  trickling bytes could hold the UI indefinitely while the line grew
+  without limit.
 
 ## [1.11.2] — 2026-11-19
 

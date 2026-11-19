@@ -168,6 +168,8 @@ That makes a panic on the packet path fatal to the daemon, so the code that read
 
 There is no control channel: the monitor can only read counters, never command the daemon. The directory is created by `RuntimeDirectory=cachydpi` and the socket is removed on shutdown / overwritten on restart.
 
+The monitor's side of the socket is also an input. `/run/cachydpi` is writable only by root and the service user, but the `/tmp` fallback, used when the daemon cannot create `/run/cachydpi`, can be bound by any local account while no daemon holds it. A monitor that finds its socket there checks the peer with `SO_PEERCRED` on every connection and accepts only root or its own uid; a path given on the command line is the user's choice and is not checked. Every reply is read with a 256 KiB cap and a 3-second deadline on the whole reply, so a sender cannot grow the monitor's memory or hold its UI by trickling bytes.
+
 The socket is `0666` so `cachydpi monitor` needs no privileges, which means **everything in the snapshot is readable by any local process**. The recent-events buffer used to embed the source address of each DPI-forged packet, making this a second route to the same data the journal was recording. Event messages are now fixed strings (`push_event` takes a `&'static str`), so no runtime value can reach them, and `log_identifying_fields` does not change them: that switch widens what the journal records, and the journal's audience is not this socket's. The peer address of a forged packet is in the matching `debug` log line, under the switch. Anything added to the snapshot has to stay safe to hand to an unprivileged process.
 
 ---
