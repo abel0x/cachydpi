@@ -96,6 +96,8 @@ sudo nft list table ip cachydpi # inspect the installed rules
 
 CachyDPI only ever touches its own table (`ip cachydpi` and, with IPv6, `ip6 cachydpi`); it does not modify other firewall rules.
 
+One process at a time owns that table in a network namespace. A daemon with `manage_rules = true` holds an exclusive lock (`/run/cachydpi/rules-<netns>.lock`) for as long as it runs, and `install-rules`, `remove-rules` and `stop` take it before changing anything, so a second `cachydpi --foreground` started while the service is running, or a `remove-rules` aimed at it, stops with an error instead of pulling the service's rules out from under it. Stop the service first. The kernel releases the lock when its holder exits, however it exits, so nothing has to be cleaned up after a crash.
+
 ## Usage
 
 ### As a systemd service (recommended)
@@ -368,8 +370,10 @@ mode = "blacklist"   # or "exempt", or "none" to bypass every site
 ### Other problems
 
 ```bash
-# Service won't start — read the journal, then run in the foreground with trace logging:
+# Service won't start — read the journal, then run in the foreground with trace logging
+# (stop the service first: a second instance is refused while it owns the rules):
 journalctl -u cachydpi -e --no-pager
+sudo systemctl stop cachydpi
 sudo cachydpi -m 5 --foreground -vvv
 
 # Inspect / clean nftables state:

@@ -7,6 +7,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- One process at a time owns the nftables tables in a network namespace.
+  Every instance uses the same table names and installing deletes what is
+  there, so a second `cachydpi --foreground` started while the service ran
+  replaced the service's tables, failed on the queue the service held, and
+  deleted the tables on its way out: the service kept running with nothing
+  steering packets to it. A daemon with `manage_rules = true` now holds an
+  exclusive lock, `/run/cachydpi/rules-<netns inode>.lock`, and
+  `install-rules`, `remove-rules` and `stop` take it before changing
+  anything; whoever cannot get it exits without touching the tables. The
+  kernel drops the lock when its holder exits, `SIGKILL` included. Separate
+  network namespaces have separate locks.
+- The panic hook deletes the tables only if this process owns them. It
+  deleted them unconditionally, including under `manage_rules = false`,
+  where they belong to whoever ran `install-rules`.
+
 ### Security
 
 - The metrics socket no longer names peers. With

@@ -26,12 +26,17 @@ use cachydpi::metrics::METRICS;
 use cachydpi::nfqueue::NfQueue;
 use cachydpi::packet::Direction;
 use cachydpi::rawsocket::RawSocket;
-use cachydpi::rules::{self, NftRules};
+use cachydpi::rules::{self, NftRules, RulesOwner};
 use cachydpi::settings;
 use cachydpi::strategies::{self, BypassMode, StrategyEngine};
 
 /// Global shutdown flag
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Set once this process has installed the tables it owns. The panic hook
+/// deletes them only then: with `manage_rules = false`, or before ownership
+/// was taken, the tables belong to someone else.
+static RULES_OWNED: AtomicBool = AtomicBool::new(false);
 
 fn main() -> Result<()> {
     // Parse CLI arguments
@@ -106,6 +111,9 @@ fn main() -> Result<()> {
         let ipv6 = config.general.ipv6;
         std::panic::set_hook(Box::new(move |info| {
             eprintln!("FATAL PANIC: {}", info);
+            if !RULES_OWNED.load(Ordering::SeqCst) {
+                return;
+            }
             // Best-effort nftables cleanup
             let _ = std::process::Command::new("nft")
                 .args(["delete", "table", "ip", "cachydpi"])
@@ -183,11 +191,24 @@ fn main() -> Result<()> {
         config.general.ipv6 = false;
     }
 
+    // Own the tables before touching them, and keep owning them until they
+    // are gone: `_rules_owner` is declared ahead of `nft_rules`, so it is
+    // dropped after it, once the teardown in NftRules::drop has run. With
+    // manage_rules off the tables are someone else's and are never touched.
+    let _rules_owner = if config.general.manage_rules {
+        Some(RulesOwner::acquire().context("cannot take ownership of the nftables tables")?)
+    } else {
+        None
+    };
+
     // Install nftables rules
     let mut nft_rules = NftRules::new(config.general.queue_num, config.general.ipv6)
         .with_quic(cachydpi::strategies::quic_desync_active(mode, &config))
         .with_adaptive(matches!(mode, BypassMode::AutoDetect));
     if config.general.manage_rules {
+        // Owned from the first change on: install starts by deleting
+        // whatever tables are there, and a panic part-way leaves ours.
+        RULES_OWNED.store(true, Ordering::SeqCst);
         nft_rules
             .install()
             .context("failed to install nftables rules")?;
@@ -366,6 +387,7 @@ fn run_queue_loop(
 fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path) -> Result<()> {
     match cmd {
         Commands::InstallRules => {
+            let _owner = RulesOwner::acquire()?;
             let mode = BypassMode::from_mode_number(config.general.mode);
             let mut rules = NftRules::new(config.general.queue_num, config.general.ipv6)
                 .with_quic(cachydpi::strategies::quic_desync_active(mode, config))
@@ -380,6 +402,7 @@ fn handle_command(cmd: &Commands, config: &Config, config_path: &std::path::Path
             Ok(())
         }
         Commands::RemoveRules => {
+            let _owner = RulesOwner::acquire()?;
             let mut rules = NftRules::new(config.general.queue_num, config.general.ipv6);
             rules.remove()?;
             println!("nftables rules removed");
@@ -579,6 +602,7 @@ fn force_stop(config: &Config) -> Result<()> {
     // traffic through while nobody reads the queue, but the stale table would
     // still be there for the next start to trip over. Removing it is harmless
     // when the daemon already did.
+    let _owner = RulesOwner::acquire()?;
     NftRules::new(config.general.queue_num, config.general.ipv6).remove()?;
     println!("nftables rules removed");
     println!("The service still starts at boot if enabled (sudo systemctl disable cachydpi)");
