@@ -1,6 +1,6 @@
 [package]
 name = "cachydpi"
-version = "1.11.2"
+version = "1.12.0"
 # The code and several dependencies need 1.88; 1.87 fails to build. install.sh
 # reads this line to check the toolchain before it builds.
 rust-version = "1.88"
