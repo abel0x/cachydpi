@@ -196,7 +196,14 @@ impl Metrics {
 
     /// Push a notable event into the ring buffer.
     /// Only call from rare code paths (errors, forged detections, TTL learns).
-    pub fn push_event(&self, level: EventLevel, message: String) {
+    ///
+    /// The message is a `&'static str` on purpose. The snapshot is served on a
+    /// `0666` socket, so everything in it is readable by any local account, and
+    /// `[logging] log_identifying_fields` is a switch for the journal's
+    /// audience, not this one. A fixed string cannot carry a peer address, a
+    /// domain or any other runtime value, whatever that switch says; the
+    /// identifying detail belongs in the log line next to the event.
+    pub fn push_event(&self, level: EventLevel, message: &'static str) {
         if let Ok(mut events) = self.events.lock() {
             if events.len() >= MAX_RECENT_EVENTS {
                 events.pop_front();
@@ -204,7 +211,7 @@ impl Metrics {
             events.push_back(MetricEvent {
                 timestamp_ms: epoch_ms(),
                 level,
-                message,
+                message: message.to_string(),
             });
         }
     }

@@ -164,11 +164,11 @@ That makes a panic on the packet path fatal to the daemon, so the code that read
 | Direction | One-way, daemon → monitor (read-only) |
 | Permissions | `0666` |
 | Exposed | aggregate counters (packets processed, fragments sent, passive drops), timestamps, PID, process CPU/RAM, and the last 50 notable events |
-| **Not** exposed | packet contents, config values, and — unless `[logging] log_identifying_fields` is on — IP addresses and domain names |
+| **Not** exposed | packet contents, config values, IP addresses and domain names, whatever `[logging] log_identifying_fields` is set to |
 
 There is no control channel: the monitor can only read counters, never command the daemon. The directory is created by `RuntimeDirectory=cachydpi` and the socket is removed on shutdown / overwritten on restart.
 
-The socket is `0666` so `cachydpi monitor` needs no privileges, which means **everything in the snapshot is readable by any local process**. The recent-events buffer used to embed the source address of each DPI-forged packet, making this a second route to the same data the journal was recording; those messages now go through the same redaction as the log. Anything added to the snapshot has to stay safe to hand to an unprivileged process.
+The socket is `0666` so `cachydpi monitor` needs no privileges, which means **everything in the snapshot is readable by any local process**. The recent-events buffer used to embed the source address of each DPI-forged packet, making this a second route to the same data the journal was recording. Event messages are now fixed strings (`push_event` takes a `&'static str`), so no runtime value can reach them, and `log_identifying_fields` does not change them: that switch widens what the journal records, and the journal's audience is not this socket's. The peer address of a forged packet is in the matching `debug` log line, under the switch. Anything added to the snapshot has to stay safe to hand to an unprivileged process.
 
 ---
 
@@ -195,7 +195,7 @@ Both announce themselves with a `WARN` at startup, because the realistic failure
 
 Identifying values are never hashed. The SNI space is small and guessable, so a hash is reversible by dictionary in minutes: it would buy the appearance of protection and nothing else. A value is either logged or it is not.
 
-The same redaction covers the metrics socket, since the recent-events buffer is served to any local process (see [Metrics socket](#metrics-socket)).
+Neither switch affects the metrics socket: its recent-events buffer is served to any local process, so it never carries identifying values (see [Metrics socket](#metrics-socket)).
 
 ---
 

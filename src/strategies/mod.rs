@@ -368,13 +368,7 @@ impl StrategyEngine {
             self.note_interference(packet, tcp);
             METRICS.forged_rst_drops.fetch_add(1, Ordering::Relaxed);
             self.record_forged_rst_source(packet.src_addr());
-            METRICS.push_event(
-                EventLevel::Warning,
-                format!(
-                    "forged RST from {}",
-                    crate::logging::peer(packet.src_addr())
-                ),
-            );
+            METRICS.push_event(EventLevel::Warning, "forged RST dropped");
             debug!(
                 src = %crate::logging::peer(packet.src_addr()),
                 "dropping forged RST packet from DPI"
@@ -395,13 +389,7 @@ impl StrategyEngine {
                 METRICS
                     .forged_redirect_drops
                     .fetch_add(1, Ordering::Relaxed);
-                METRICS.push_event(
-                    EventLevel::Warning,
-                    format!(
-                        "forged redirect from {}",
-                        crate::logging::peer(packet.src_addr())
-                    ),
-                );
+                METRICS.push_event(EventLevel::Warning, "forged redirect dropped");
                 debug!(
                     src = %crate::logging::peer(packet.src_addr()),
                     "dropping forged HTTP redirect from DPI"
@@ -415,13 +403,7 @@ impl StrategyEngine {
             {
                 self.note_interference(packet, tcp);
                 METRICS.forged_alert_drops.fetch_add(1, Ordering::Relaxed);
-                METRICS.push_event(
-                    EventLevel::Warning,
-                    format!(
-                        "forged TLS alert from {}",
-                        crate::logging::peer(packet.src_addr())
-                    ),
-                );
+                METRICS.push_event(EventLevel::Warning, "forged TLS alert dropped");
                 debug!(
                     src = %crate::logging::peer(packet.src_addr()),
                     "dropping forged TLS alert from DPI"

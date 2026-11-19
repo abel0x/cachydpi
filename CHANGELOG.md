@@ -5,6 +5,18 @@ All notable changes to CachyDPI are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- The metrics socket no longer names peers. With
+  `[logging] log_identifying_fields` on, each forged RST, redirect or TLS
+  alert event in the recent-events buffer carried the address it came from,
+  and that buffer is readable by every local account through the `0666`
+  socket. Event messages are now fixed text ("forged RST dropped" and so
+  on) in both modes; the address is still in the `debug` log line when the
+  switch is on.
+
 ## [1.11.2] — 2026-11-19
 
 ### Security
