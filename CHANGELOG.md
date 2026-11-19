@@ -21,6 +21,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   fallback, which any local account can create, and showed what it was
   sent. A socket found there is now accepted only from root or the user
   running the monitor; an explicit path argument still connects anywhere.
+- A local client can no longer make the daemon rebuild metrics as fast as
+  it connects. Every connection used to read procfs and serialize a fresh
+  snapshot, all inside the 25 % CPU quota the daemon shares with packet
+  handling. A snapshot is now built at most every 500 ms and served from
+  cache, and at most 20 connections a second are answered; the rest are
+  closed unanswered, which the monitor reports as such rather than as a
+  version mismatch.
 - The monitor bounds every reply: 256 KiB at most, and 3 seconds for the
   whole reply. The old 3-second timeout applied to each read, so a sender
   trickling bytes could hold the UI indefinitely while the line grew

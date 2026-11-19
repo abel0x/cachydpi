@@ -277,6 +277,13 @@ fn read_reply(stream: &mut UnixStream, deadline: Duration) -> Result<String, Fet
                 MAX_SNAPSHOT_BYTES / 1024
             )));
         }
+        if n == 0 && reply.is_empty() {
+            return Err(FetchError::Unreachable(
+                "the daemon closed the connection without a reply; it answers a \
+                 limited number of connections per second"
+                    .into(),
+            ));
+        }
         if n == 0 || end.is_some() {
             break;
         }
@@ -950,6 +957,13 @@ mod tests {
         let mut stream = serve(line, Duration::ZERO);
         let reply = read_reply(&mut stream, FETCH_DEADLINE).unwrap();
         assert!(parse_snapshot(&reply).is_ok());
+    }
+
+    #[test]
+    fn a_connection_closed_without_a_reply_is_not_a_version_mismatch() {
+        let mut stream = serve(Vec::new(), Duration::ZERO);
+        let err = read_reply(&mut stream, FETCH_DEADLINE).expect_err("no reply");
+        assert!(matches!(err, FetchError::Unreachable(_)), "{err}");
     }
 
     #[test]
