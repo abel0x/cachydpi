@@ -3,8 +3,14 @@
 # Copyright (C) 2026 abel0x <https://github.com/abel0x>
 # install.sh — CachyDPI one-command installer for CachyOS
 #
-# Usage: curl -fsSL https://raw.githubusercontent.com/abel0x/cachydpi/main/install.sh | sudo bash
-# Or:    sudo ./install.sh
+# Usage, from a checkout of a release tag:
+#   git clone --branch vX.Y.Z https://github.com/abel0x/cachydpi.git
+#   cd cachydpi && git verify-tag vX.Y.Z   # tags are signed
+#   sudo ./install.sh
+#
+# It is not meant to be piped from the network into a root shell: that runs
+# whatever the branch holds at that moment, unreviewed, and the script needs
+# the source tree next to it anyway.
 #
 # This script:
 #   1. Installs build dependencies
@@ -32,6 +38,41 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# ── Source tree ──
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/Cargo.toml" || ! -f "$SCRIPT_DIR/Cargo.lock" ]]; then
+    err "Run this from a CachyDPI checkout: Cargo.toml and Cargo.lock were not found next to it."
+    err "  git clone https://github.com/abel0x/cachydpi.git && cd cachydpi && sudo ./install.sh"
+    exit 1
+fi
+cd "$SCRIPT_DIR"
+
+# The minimum Rust, as Cargo.toml declares it.
+RUST_MIN="$(sed -n 's/^rust-version = "\([0-9.]*\)"/\1/p' Cargo.toml)"
+
+# ── Who builds ──
+# Building runs build scripts and proc macros from every dependency, so it
+# runs as the user who called sudo, not as root; only installing needs root.
+BUILD_USER="${SUDO_USER:-}"
+if [[ -z $BUILD_USER || $BUILD_USER == root ]]; then
+    BUILD_USER=""
+    warn "No unprivileged user to build as (run with sudo from your own account); building as root"
+fi
+BUILD_HOME=""
+[[ -n $BUILD_USER ]] && BUILD_HOME="$(getent passwd "$BUILD_USER" | cut -d: -f6)"
+as_builder() {
+    if [[ -n $BUILD_USER ]]; then
+        # bash whatever the user's login shell is, with a clean environment and
+        # ~/.cargo/bin first, so a rustup toolchain is found.
+        runuser -u "$BUILD_USER" -- env -i \
+            HOME="$BUILD_HOME" USER="$BUILD_USER" TERM="${TERM:-dumb}" \
+            PATH="$BUILD_HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin" \
+            bash -c "cd $(printf %q "$SCRIPT_DIR") && $(printf '%q ' "$@")"
+    else
+        "$@"
+    fi
+}
+
 # ── Detect distribution ──
 if [[ -f /etc/os-release ]]; then
     . /etc/os-release
@@ -43,9 +84,13 @@ fi
 # ── Install dependencies ──
 info "Installing dependencies..."
 if command -v pacman &>/dev/null; then
+    # A rustup toolchain the user already has conflicts with the rust package.
+    RUST_PKGS=(rust)
+    if as_builder cargo --version &>/dev/null; then
+        RUST_PKGS=()
+    fi
     pacman -S --needed --noconfirm \
-        rust \
-        cargo \
+        "${RUST_PKGS[@]}" \
         pkg-config \
         libnetfilter_queue \
         libnfnetlink \
@@ -55,9 +100,14 @@ if command -v pacman &>/dev/null; then
     ok "Dependencies installed (pacman)"
 elif command -v apt &>/dev/null; then
     apt update
+    # Debian's and Ubuntu's rustc is usually older than the build needs; a
+    # rustup toolchain the user already has is used instead of it.
+    RUST_PKGS=(rustc cargo)
+    if as_builder cargo --version &>/dev/null; then
+        RUST_PKGS=()
+    fi
     apt install -y \
-        rustc \
-        cargo \
+        "${RUST_PKGS[@]}" \
         pkg-config \
         libnetfilter-queue-dev \
         libnfnetlink-dev \
@@ -70,13 +120,33 @@ else
     exit 1
 fi
 
-# ── Build ──
-info "Building CachyDPI..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# ── Toolchain ──
+RUSTC_VERSION="$(as_builder rustc --version 2>/dev/null | awk '{print $2}')" || true
+if [[ -z $RUSTC_VERSION ]]; then
+    err "rustc was not found for ${BUILD_USER:-root}."
+    exit 1
+fi
+if [[ -n $RUST_MIN && "$(printf '%s\n%s\n' "$RUST_MIN" "${RUSTC_VERSION%%-*}" | sort -V | head -1)" != "$RUST_MIN" ]]; then
+    err "rustc $RUSTC_VERSION is older than the $RUST_MIN this build needs."
+    err "Install a current toolchain with rustup (https://rustup.rs) as ${BUILD_USER:-root}, then run this again."
+    exit 1
+fi
+ok "rustc $RUSTC_VERSION (needs $RUST_MIN+)"
 
-export RUSTFLAGS="-C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols"
-cargo build --release
+# Earlier versions of this script built as root; that target/ is not the
+# user's to write to.
+if [[ -n $BUILD_USER && -e target && "$(stat -c %U target)" != "$BUILD_USER" ]]; then
+    err "target/ belongs to $(stat -c %U target), from an earlier build as root."
+    err "Remove it (sudo rm -rf target) and run this again."
+    exit 1
+fi
+
+# ── Build ──
+info "Building CachyDPI as ${BUILD_USER:-root}..."
+# --locked builds exactly the dependency versions Cargo.lock records, with the
+# checksums it records, instead of resolving newer ones at install time.
+as_builder env RUSTFLAGS="-C opt-level=3 -C lto=fat -C codegen-units=1 -C strip=symbols" \
+    cargo build --release --locked
 ok "Build complete"
 
 # ── Install binary ──

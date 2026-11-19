@@ -51,13 +51,16 @@ The AUR package installs both binaries (`cachydpi`, `cachydpi-monitor`), the sys
 
 ### From source — one-command installer
 
-`install.sh` installs build dependencies (pacman or apt), builds with release flags, installs the binary/config/systemd units, creates the system user, and offers to start the service:
+`install.sh` installs build dependencies (pacman or apt), builds with release flags, installs the binary/config/systemd units, creates the system user, and offers to start the service. Run it from a checkout of a release tag; release tags are signed (see [Release verification](#release-verification-ssh-signed) for setting up `verify-tag`):
 
 ```bash
-git clone https://github.com/abel0x/cachydpi.git
+git clone --branch v1.12.0 https://github.com/abel0x/cachydpi.git
 cd cachydpi
+git verify-tag v1.12.0
 sudo ./install.sh
 ```
+
+The build runs as the user who called `sudo`, not as root, with `cargo build --locked`, so it uses exactly the dependency versions and checksums in `Cargo.lock`; only the install step runs as root. It checks rustc against the `rust-version` in `Cargo.toml` (1.88) before building. Debian's and Ubuntu's packaged rustc is older than that: install Rust with [rustup](https://rustup.rs) first, and the script uses that toolchain instead of installing the distribution's. The script is not meant to be piped from the network into a root shell.
 
 ### From source — manual
 

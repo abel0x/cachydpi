@@ -9,6 +9,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- `install.sh` builds as the user who ran `sudo`, not as root, and with
+  `cargo build --locked`, so dependency build scripts never run as root and
+  the build uses exactly what `Cargo.lock` records. It checks rustc against
+  the new `rust-version = "1.88"` in `Cargo.toml` first: the apt path
+  installed a distribution rustc older than that, which then failed deep in
+  the build. A rustup toolchain the user already has is used instead of
+  the distribution's. It now refuses to run outside a source checkout, and
+  the `curl ... | sudo bash` usage, which could never work without the
+  source next to the script, is gone from its header; the README installs
+  from a signed release tag.
+- CI pins every action to a reviewed commit, runs with a read-only token
+  and without persisted checkout credentials, and installs fixed versions
+  of `cargo-audit` and `cargo-fuzz` with `--locked`.
+
 - One process at a time owns the nftables tables in a network namespace.
   Every instance uses the same table names and installing deletes what is
   there, so a second `cachydpi --foreground` started while the service ran
